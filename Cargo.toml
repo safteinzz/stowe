@@ -1,0 +1,25 @@
+[package]
+name = "stowe"
+version = "0.1.0"
+edition = "2024"
+description = "Git for files, any remote: version-control large/binary files with a pluggable, dumb-but-self-describing remote backend."
+license = "AGPL-3.0-only"
+repository = "https://gitlab.com/safteinzz/stowe"
+readme = "README.md"
+keywords = ["backup", "version-control", "vcs", "dedup", "files"]
+categories = ["command-line-utilities", "filesystem"]
+
+[dependencies]
+anyhow     = "1"                                           # error handling
+blake3     = "1"                                           # content-addressing hash + audio fingerprint
+clap       = { version = "4", features = ["derive"] }      # CLI argument parsing
+futures    = "0.3"                                         # buffer_unordered for concurrent uploads
+serde      = { version = "1", features = ["derive"] }      # (de)serialize the on-disk JSON model
+serde_json = "1"                                           # commits / index / config are plain JSON
+walkdir    = "2"                                           # recursive working-tree scan
+# pluggable remote backends behind one Operator: local fs + any S3-compatible store
+opendal    = { version = "0.57", features = ["services-fs", "services-s3"] }
+# async only inside the remote; the tokio runtime is quarantined there
+tokio      = { version = "1", features = ["rt-multi-thread", "fs", "io-util"] }
+# pure-Rust audio decode → PCM, so we fingerprint songs without C deps or binaries
+symphonia  = { version = "0.6", features = ["mp3", "flac", "isomp4", "alac", "aac", "ogg", "vorbis", "wav"] }
