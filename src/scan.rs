@@ -1,6 +1,7 @@
 //! Scanning the working tree into a manifest, and diffing two manifests.
 
 use anyhow::Result;
+use rayon::prelude::*;
 use std::collections::HashMap;
 use std::io::{BufReader, Read};
 use std::time::UNIX_EPOCH;
@@ -22,6 +23,55 @@ pub fn hash_file(path: &std::path::Path) -> Result<String> {
         hasher.update(&buf[..n]);
     }
     Ok(hasher.finalize().to_hex().to_string())
+}
+
+/// Repo-relative, forward-slash path string for `abs` under `root`. Purely
+/// lexical, so it also works for files that no longer exist (staged deletions).
+pub fn rel_path(root: &std::path::Path, abs: &std::path::Path) -> String {
+    abs.strip_prefix(root)
+        .unwrap_or(abs)
+        .to_string_lossy()
+        .replace('\\', "/")
+}
+
+/// Build a single manifest [`Entry`] for an existing file (used by per-file
+/// `add`). `fingerprint` decodes audio to record its fingerprint, same as a
+/// full scan.
+pub fn entry_for(root: &std::path::Path, abs: &std::path::Path, fingerprint: bool) -> Result<Entry> {
+    let meta = std::fs::metadata(abs)?;
+    let mtime = meta
+        .modified()?
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+    let fp = if fingerprint {
+        crate::audio::fingerprint(abs)?
+    } else {
+        None
+    };
+    Ok(Entry {
+        path: rel_path(root, abs),
+        size: meta.len(),
+        mtime,
+        hash: hash_file(abs)?,
+        fp,
+    })
+}
+
+/// All tracked files under `dir` (recursive), as absolute paths, skipping the
+/// `.stowe` metadata dir. Used to stage a directory argument.
+pub fn files_under(dir: &std::path::Path) -> Result<Vec<std::path::PathBuf>> {
+    let mut out = Vec::new();
+    for entry in WalkDir::new(dir)
+        .into_iter()
+        .filter_entry(|e| e.file_name() != ".stowe")
+    {
+        let entry = entry?;
+        if entry.file_type().is_file() {
+            out.push(entry.path().to_path_buf());
+        }
+    }
+    Ok(out)
 }
 
 /// Cached entry reused when a file's size+mtime are unchanged, so we skip both
@@ -51,14 +101,30 @@ fn cache_from(manifest: &Manifest) -> HashMap<String, Cached> {
         .collect()
 }
 
+/// One walked working-tree file, before its content is read.
+struct Found {
+    rel: String,
+    abs: std::path::PathBuf,
+    size: u64,
+    mtime: i64,
+}
+
 /// Walk the working tree and build a fresh, path-sorted manifest.
 ///
 /// `cache_source` (typically HEAD's manifest) provides hashes we can reuse for
 /// files that look unchanged, so only new/modified files are actually read.
-pub fn scan(repo: &Repo, cache_source: &Manifest) -> Result<Manifest> {
+///
+/// `fingerprint` controls whether *new/changed* audio files are decoded to
+/// produce their audio fingerprint. That decode is by far the most expensive
+/// thing stowe does, so `status` skips it (`false`) and just hashes — plain
+/// renames are still caught by hash. `add` passes `true` to record fingerprints
+/// in the snapshot, which is what lets a later re-tag+rename read as a move.
+pub fn scan(repo: &Repo, cache_source: &Manifest, fingerprint: bool) -> Result<Manifest> {
     let cache = cache_from(cache_source);
-    let mut out: Manifest = Vec::new();
 
+    // WalkDir is sequential; gather the files first, then read their contents in
+    // parallel below — hashing and decoding are independent per file.
+    let mut found: Vec<Found> = Vec::new();
     for entry in WalkDir::new(&repo.root).into_iter().filter_entry(|e| {
         // Never descend into our own metadata directory.
         e.file_name() != ".stowe"
@@ -73,7 +139,6 @@ pub fn scan(repo: &Repo, cache_source: &Manifest) -> Result<Manifest> {
             .unwrap_or(abs)
             .to_string_lossy()
             .replace('\\', "/");
-
         let meta = entry.metadata()?;
         let size = meta.len();
         let mtime = meta
@@ -81,23 +146,40 @@ pub fn scan(repo: &Repo, cache_source: &Manifest) -> Result<Manifest> {
             .duration_since(UNIX_EPOCH)
             .map(|d| d.as_secs() as i64)
             .unwrap_or(0);
-
-        // Reuse the cached hash *and* fingerprint when the file looks unchanged;
-        // otherwise re-read it: hash the bytes, and (for audio) fingerprint the
-        // decoded PCM.
-        let (hash, fp) = match cache.get(&rel) {
-            Some(c) if c.size == size && c.mtime == mtime => (c.hash.clone(), c.fp.clone()),
-            _ => (hash_file(abs)?, crate::audio::fingerprint(abs)?),
-        };
-
-        out.push(Entry {
-            path: rel,
+        found.push(Found {
+            rel,
+            abs: abs.to_path_buf(),
             size,
             mtime,
-            hash,
-            fp,
         });
     }
+
+    // Spread the per-file work across cores. A cache hit (unchanged size+mtime)
+    // reuses the stored hash/fingerprint and reads nothing.
+    let mut out: Manifest = found
+        .par_iter()
+        .map(|f| -> Result<Entry> {
+            let (hash, fp) = match cache.get(&f.rel) {
+                Some(c) if c.size == f.size && c.mtime == f.mtime => (c.hash.clone(), c.fp.clone()),
+                _ => {
+                    let hash = hash_file(&f.abs)?;
+                    let fp = if fingerprint {
+                        crate::audio::fingerprint(&f.abs)?
+                    } else {
+                        None
+                    };
+                    (hash, fp)
+                }
+            };
+            Ok(Entry {
+                path: f.rel.clone(),
+                size: f.size,
+                mtime: f.mtime,
+                hash,
+                fp,
+            })
+        })
+        .collect::<Result<_>>()?;
 
     out.sort_by(|a, b| a.path.cmp(&b.path));
     Ok(out)
@@ -225,35 +307,137 @@ pub fn diff(old: &Manifest, new: &Manifest) -> Diff {
     d
 }
 
+/// Render a git-style `status`: a staged section (HEAD → index), an unstaged
+/// section and an untracked list (both from index → working tree), then the
+/// summary line. Only `main` exists, so the branch is always `main`.
+pub fn print_status(staged: &Diff, unstaged: &Diff, summary: &Diff) {
+    use colored::Colorize;
+
+    println!("On branch {}", "main".green());
+
+    let unstaged_changes =
+        !unstaged.modified.is_empty() || !unstaged.removed.is_empty() || !unstaged.moved.is_empty();
+    if staged.is_empty() && !unstaged_changes && unstaged.added.is_empty() {
+        println!("nothing to commit, working tree clean");
+        return;
+    }
+
+    // Colour is by *change type*, not by section: added/new is green, modified
+    // yellow, deleted red, renamed blue — consistent everywhere it appears.
+    let added = |s: String| s.green();
+    let modified = |s: String| s.yellow();
+    let deleted = |s: String| s.red();
+    let renamed = |s: String| s.blue();
+
+    // `label: path`, indented and padded like git.
+    let line = |label: &str, text: &str, paint: &dyn Fn(String) -> colored::ColoredString| {
+        println!("        {}", paint(format!("{label:<12}{text}")));
+    };
+    // Renames carry two long names, so split them over two aligned lines (the
+    // new path under the old) instead of one wrapping `old -> new`.
+    let rename = |from: &str, to: &str| {
+        println!("        {}", renamed(format!("{:<12}{from}", "renamed:")));
+        println!("        {}", renamed(format!("         -> {to}")));
+    };
+
+    // Group order: deleted → modified → renamed → new (destructive first,
+    // additive last); items are already sorted alphabetically within each.
+    if !staged.is_empty() {
+        println!("\nChanges to be committed:");
+        for p in &staged.removed {
+            line("deleted:", p, &deleted);
+        }
+        for p in &staged.modified {
+            line("modified:", p, &modified);
+        }
+        for (from, to) in &staged.moved {
+            rename(from, to);
+        }
+        for p in &staged.added {
+            line("new file:", p, &added);
+        }
+    }
+
+    if unstaged_changes {
+        println!("\nChanges not staged for commit:");
+        println!("  {}", "(use \"stowe add <file>...\" to stage changes)".dimmed());
+        for p in &unstaged.removed {
+            line("deleted:", p, &deleted);
+        }
+        for p in &unstaged.modified {
+            line("modified:", p, &modified);
+        }
+        for (from, to) in &unstaged.moved {
+            rename(from, to);
+        }
+    }
+
+    if !unstaged.added.is_empty() {
+        println!("\nUntracked files:");
+        println!("  {}", "(use \"stowe add <file>...\" to include in commit)".dimmed());
+        for p in &unstaged.added {
+            println!("        {}", added(p.clone()));
+        }
+    }
+
+    println!(
+        "\n{} {}  {}  {}  {}",
+        "summary:".dimmed(),
+        format!("+{}", summary.added.len()).green(),
+        format!("-{}", summary.removed.len()).red(),
+        format!("~{}", summary.modified.len()).yellow(),
+        format!("⇄{}", summary.moved.len()).blue(),
+    );
+}
+
 /// Pretty-print a diff to stdout. Returns false if there was nothing to show.
+///
+/// `colored` auto-strips the ANSI codes when stdout isn't a terminal, so piping
+/// stays clean. Moves print over two lines (old, then an indented `→ new`) so a
+/// long rename doesn't smear into one unreadable line.
 pub fn print_diff(d: &Diff) -> bool {
+    use colored::Colorize;
+
     if d.is_empty() {
-        println!("No changes.");
+        println!("{}", "No changes.".dimmed());
         return false;
     }
-    let group = |label: &str, items: &[String]| {
-        if !items.is_empty() {
-            println!("\n{label} ({}):", items.len());
-            for i in items {
-                println!("  {i}");
-            }
+
+    let group = |title: colored::ColoredString, items: &[String], paint: &dyn Fn(&str) -> colored::ColoredString| {
+        if items.is_empty() {
+            return;
+        }
+        println!("\n{} {}", title, format!("({})", items.len()).dimmed());
+        for i in items {
+            println!("  {}", paint(i));
         }
     };
-    group("🟢 added", &d.added);
-    group("🔴 removed", &d.removed);
-    group("🟡 modified", &d.modified);
+
+    group("added".green().bold(), &d.added, &|s| format!("+ {s}").green());
+    group("removed".red().bold(), &d.removed, &|s| format!("- {s}").red());
+    group("modified".yellow().bold(), &d.modified, &|s| {
+        format!("~ {s}").yellow()
+    });
+
     if !d.moved.is_empty() {
-        println!("\n🔵 moved/renamed ({}):", d.moved.len());
+        println!(
+            "\n{} {}",
+            "moved/renamed".blue().bold(),
+            format!("({})", d.moved.len()).dimmed()
+        );
         for (from, to) in &d.moved {
-            println!("  {from}  ->  {to}");
+            println!("  {}", from.dimmed());
+            println!("    {} {}", "→".blue(), to.cyan());
         }
     }
+
     println!(
-        "\nsummary: +{} added, -{} removed, ~{} modified, {} moved",
-        d.added.len(),
-        d.removed.len(),
-        d.modified.len(),
-        d.moved.len()
+        "\n{} {}  {}  {}  {}",
+        "summary:".dimmed(),
+        format!("+{}", d.added.len()).green(),
+        format!("-{}", d.removed.len()).red(),
+        format!("~{}", d.modified.len()).yellow(),
+        format!("⇄{}", d.moved.len()).blue(),
     );
     true
 }

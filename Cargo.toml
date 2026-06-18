@@ -1,6 +1,6 @@
 [package]
 name = "stowe"
-version = "0.1.0"
+version = "0.1.1"
 edition = "2024"
 description = "Git for files, any remote: version-control large/binary files with a pluggable, dumb-but-self-describing remote backend."
 license = "AGPL-3.0-only"
@@ -17,6 +17,8 @@ futures    = "0.3"                                         # buffer_unordered fo
 serde      = { version = "1", features = ["derive"] }      # (de)serialize the on-disk JSON model
 serde_json = "1"                                           # commits / index / config are plain JSON
 walkdir    = "2"                                           # recursive working-tree scan
+rayon      = "1"                                           # hash/fingerprint files across cores
+colored    = "2"                                           # colored status output
 # pluggable remote backends behind one Operator: local fs + any S3-compatible store
 opendal    = { version = "0.57", features = ["services-fs", "services-s3"] }
 # async only inside the remote; the tokio runtime is quarantined there
