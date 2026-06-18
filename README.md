@@ -1,59 +1,51 @@
 # stowe
 
-**Git for files, any remote.** A git-shaped CLI for version-controlling large or
-binary files (music, datasets, photos, video) — where git itself chokes and
-hosts charge for storage.
-
-Same muscle memory, minus the parts that don't fit big files (no branches, no
-content diffs):
+**Git for files, any remote.** Version-control large/binary files (music,
+photos, video, datasets) where git chokes — content-addressed, deduped, with a
+dumb pluggable remote. No branches, no content diffs.
 
 ```sh
+cargo install stowe
+
 stowe init
+stowe add -A                          # or: stowe add <paths...>
+stowe commit -m "import"
 stowe remote add origin local:/mnt/backup/music
-stowe status                      # +3 added, -1 removed, 1 modified, 1 renamed
-stowe add -A
-stowe commit -m "summer tracks"
-stowe log
-stowe push                        # upload changed file contents + history
-stowe pull                        # sync another machine to the latest commit
+stowe push                            # upload changed content + history
+stowe pull                            # sync another machine to the latest
 ```
 
-## How it works
+## Features
 
-- **Content-addressed dedup.** Every file is named by the blake3 hash of its
-  contents, so identical/unchanged files are stored once. Added / removed /
-  modified / renamed all fall out of comparing snapshots by hash.
-- **Fast rescans.** A file is only re-hashed when its size or mtime changed.
-- **The remote is a dumb file store.** It only needs to hold files — all the
-  brains run client-side. A populated remote is a *bare* stowe repo:
+- **Dedup** — every file is named by its blake3 hash, so identical/unchanged
+  content is stored once.
+- **Fast rescans** — a file is re-read only when its size or mtime changes.
+- **Move tracking** — renames are matched by content hash; audio also carries a
+  fingerprint (hash of the *decoded* PCM, via
+  [Symphonia](https://github.com/pdeljanov/Symphonia)), so a song that's renamed
+  *and* re-tagged still reads as a move, not a delete + add.
+- **git-style status** — staged / unstaged / untracked, with
+  `deleted/modified/renamed/new`.
 
-  ```
-  <remote>/
-    refs/main          # the commit the remote is at — answers "where is the server?"
-    commits/<hash>.json
-    objects/<ab>/<rest>
-  ```
+## Remotes
 
-  So any machine can read `refs/main` and reconstruct the library. Today the
-  only backend is `local:<path>` (a folder / mounted drive / NAS); `rclone:`
-  (Google Drive, FTP, S3, Dropbox, …) and native `ftp://` are next, behind the
-  same four-method interface.
+The backend is picked from the URL:
 
-## On-disk layout (local repo)
+- `local:<path>` — folder, mounted drive, or NAS. Anything you can mount is a
+  remote, so Google Drive / Dropbox / FTP work today by mounting them
+  (`rclone mount gdrive: ~/gdrive`) and pointing `local:` at the mount.
+- `s3://<bucket>[/<root>]` — any S3-compatible store (AWS, Backblaze B2, MinIO).
+  Credentials from the `AWS_*` env vars; set `AWS_ENDPOINT_URL` for B2/MinIO.
 
-```
-.stowe/
-  config             # remotes
-  HEAD               # current commit hash
-  index              # staged snapshot
-  commits/<hash>.json
-```
+A populated remote is a *bare* repo — `refs/main`, `commits/<hash>.json`,
+`objects/<ab>/<rest>` — so any machine can read it and rebuild the library.
+Native `gdrive:` / `rclone:` / `ftp://` are planned, behind the same interface.
 
 ## Status
 
-Early. Linear history only ("main"), last-write-wins on push. Whole-file
-objects (no chunking yet). `stowe gc` (prune unreferenced history) and more
-backends are planned.
+Early: linear history (one `main`), last-write-wins push, whole-file objects (no
+chunking). `stowe restore`/`checkout` (recover a committed file) and `stowe gc`
+(prune unreferenced history) are planned.
 
 ## License
 
