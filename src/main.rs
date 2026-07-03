@@ -68,6 +68,22 @@ enum Cmd {
         #[arg(default_value = "origin")]
         remote: String,
     },
+    /// Restore committed file(s) — undo working-tree changes, or recover an
+    /// older version. Bytes come from a remote's object store.
+    Restore {
+        /// Files to restore. Omit and pass `-A` for the whole snapshot.
+        paths: Vec<std::path::PathBuf>,
+        /// Restore every file in the target commit.
+        #[arg(short = 'A', long)]
+        all: bool,
+        /// Restore the version from this commit (hash or unique prefix) instead
+        /// of HEAD.
+        #[arg(long)]
+        from: Option<String>,
+        /// Remote to fetch object bytes from.
+        #[arg(long, default_value = "origin")]
+        remote: String,
+    },
 }
 
 #[derive(Subcommand)]
@@ -90,6 +106,7 @@ fn main() -> Result<()> {
         Cmd::Remote { cmd, .. } => cmd_remote(cmd),
         Cmd::Push { remotes } => cmd_push(&remotes),
         Cmd::Pull { remote } => cmd_pull(&remote),
+        Cmd::Restore { paths, all, from, remote } => cmd_restore(paths, all, from.as_deref(), &remote),
     }
 }
 
@@ -420,6 +437,104 @@ fn cmd_pull(name: &str) -> Result<()> {
     println!(
         "pulled from `{name}`: now at {} ({new_commits} new commits, {written} files written)",
         short(&remote_head)
+    );
+    Ok(())
+}
+
+fn cmd_restore(
+    paths: Vec<PathBuf>,
+    all: bool,
+    from: Option<&str>,
+    remote_name: &str,
+) -> Result<()> {
+    let repo = Repo::find()?;
+    let history = repo.history()?;
+    if history.is_empty() {
+        bail!("nothing committed yet — nothing to restore");
+    }
+
+    // Resolve the target commit: HEAD by default, else the one commit whose
+    // hash starts with `--from` (a unique prefix is enough).
+    let (chash, commit) = match from {
+        None => history[0].clone(),
+        Some(prefix) => {
+            let mut it = history.iter().filter(|(h, _)| h.starts_with(prefix));
+            match (it.next(), it.next()) {
+                (None, _) => bail!("no commit matches `{prefix}` (see `stowe log`)"),
+                (Some(one), None) => one.clone(),
+                (Some(_), Some(_)) => bail!("`{prefix}` is ambiguous — give more characters"),
+            }
+        }
+    };
+    let manifest = commit.files;
+    let by_path: BTreeMap<&str, &Entry> = manifest.iter().map(|e| (e.path.as_str(), e)).collect();
+
+    // Which entries to restore: everything in the commit, or the named paths.
+    let targets: Vec<&Entry> = if all {
+        manifest.iter().collect()
+    } else {
+        if paths.is_empty() {
+            bail!("specify files to restore, or `-A` for the whole snapshot");
+        }
+        let root = repo.root.canonicalize()?;
+        let cwd = std::env::current_dir()?;
+        let mut out = Vec::new();
+        for arg in &paths {
+            let lexical = if arg.is_absolute() { arg.clone() } else { cwd.join(arg) };
+            // The file may be gone (we're restoring a deletion), so fall back to
+            // resolving its parent and re-appending the name.
+            let abs = match lexical.canonicalize() {
+                Ok(c) => c,
+                Err(_) => {
+                    let parent = lexical.parent().unwrap_or_else(|| Path::new("."));
+                    let name = lexical
+                        .file_name()
+                        .ok_or_else(|| anyhow!("bad path: {}", arg.display()))?;
+                    parent
+                        .canonicalize()
+                        .with_context(|| format!("no such path: {}", arg.display()))?
+                        .join(name)
+                }
+            };
+            let rel = scan::rel_path(&root, &abs);
+            let e = by_path.get(rel.as_str()).ok_or_else(|| {
+                anyhow!("`{rel}` isn't in commit {} — nothing to restore", short(&chash))
+            })?;
+            out.push(*e);
+        }
+        out
+    };
+
+    // Bytes come from the remote's object store — stowe keeps no local copies,
+    // so restoring never doubles your disk.
+    let url = remote_url(&repo, remote_name)?;
+    let backend = remote::open(&url)?;
+
+    let mut restored = 0usize;
+    let mut skipped = 0usize;
+    for e in &targets {
+        let dest = repo.root.join(&e.path);
+        // Already the wanted content? Leave it (and don't re-download).
+        if dest.exists() && scan::hash_file(&dest)? == e.hash {
+            skipped += 1;
+            continue;
+        }
+        let key = remote::object_key(&e.hash);
+        if !backend.exists(&key)? {
+            bail!(
+                "content for `{}` (commit {}) isn't on remote `{remote_name}` — was it pushed?",
+                e.path,
+                short(&chash)
+            );
+        }
+        backend.get_file(&key, &dest)?;
+        restored += 1;
+        println!("restored {}", e.path);
+    }
+
+    println!(
+        "\n{restored} file(s) restored from {}, {skipped} already current.",
+        short(&chash)
     );
     Ok(())
 }
