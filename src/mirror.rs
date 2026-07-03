@@ -358,6 +358,116 @@ pub fn pull(repo: &Repo, root: &Path) -> Result<PullReport> {
     })
 }
 
+/// What an adapt pulled in from the mirror.
+#[derive(Default)]
+pub struct AdaptReport {
+    pub added: usize,
+    pub removed: usize,
+    pub modified: usize,
+    pub moved: usize,
+}
+
+impl AdaptReport {
+    pub fn is_empty(&self) -> bool {
+        self.added == 0 && self.removed == 0 && self.modified == 0 && self.moved == 0
+    }
+}
+
+/// Reconcile the local working tree to the mirror's *actual current files* —
+/// including anything changed on the mirror outside stowe (a song copy-pasted
+/// onto the phone, one deleted by hand). The reverse of push: `remote ➜ local`.
+///
+/// Only the working tree is changed; the caller still `commit`s to record it.
+/// To stay cheap we trust the mirror's recorded hashes for same-path/same-size
+/// files and only hash what actually differs (the drift).
+pub fn adapt(repo: &Repo, root: &Path) -> Result<AdaptReport> {
+    let recorded: Manifest = match read_ref(root)? {
+        Some(h) => read_commit_files(root, &h)?,
+        None => Vec::new(),
+    };
+    let rec_by_path: HashMap<&str, &Entry> =
+        recorded.iter().map(|e| (e.path.as_str(), e)).collect();
+
+    // The mirror's true current snapshot (captures manual drift).
+    let mut actual: Manifest = Vec::new();
+    let mut stack = vec![root.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        let rd = match std::fs::read_dir(&dir) {
+            Ok(rd) => rd,
+            Err(_) => continue,
+        };
+        for entry in rd {
+            let entry = entry?;
+            if entry.file_name() == std::ffi::OsStr::new(".stowe") {
+                continue;
+            }
+            let ft = entry.file_type()?;
+            if ft.is_dir() {
+                stack.push(entry.path());
+                continue;
+            }
+            if !ft.is_file() {
+                continue;
+            }
+            let abs = entry.path();
+            let rel = abs
+                .strip_prefix(root)
+                .unwrap_or(&abs)
+                .to_string_lossy()
+                .replace('\\', "/");
+            let size = entry.metadata()?.len();
+            // Same path + same size as recorded → trust the stored hash; only
+            // hash foreign or resized files (the actual drift).
+            let hash = match rec_by_path.get(rel.as_str()) {
+                Some(e) if e.size == size => e.hash.clone(),
+                _ => scan::hash_file(&abs)?,
+            };
+            actual.push(Entry {
+                path: rel,
+                size,
+                mtime: 0, // unused: the diff keys on path+hash, and commit re-records it
+                hash,
+                fp: None,
+            });
+        }
+    }
+
+    // What must change locally to match the mirror.
+    let local = scan::scan(repo, &repo.head_manifest()?, false)?;
+    let d = scan::diff(&local, &actual);
+
+    // Apply to the local working tree.
+    for (from, to) in &d.moved {
+        let src = repo.root.join(from);
+        let dst = repo.root.join(to);
+        ensure_parent(&dst)?;
+        if src.exists() {
+            std::fs::rename(&src, &dst)?;
+        } else {
+            std::fs::copy(root.join(to), &dst)?;
+        }
+    }
+    for path in &d.removed {
+        let p = repo.root.join(path);
+        if p.exists() {
+            std::fs::remove_file(&p)?;
+        }
+    }
+    for path in d.added.iter().chain(d.modified.iter()) {
+        let dst = repo.root.join(path);
+        ensure_parent(&dst)?;
+        std::fs::copy(root.join(path), &dst)
+            .with_context(|| format!("adopting {path} from mirror"))?;
+    }
+
+    Ok(AdaptReport {
+        added: d.added.len(),
+        removed: d.removed.len(),
+        modified: d.modified.len(),
+        moved: d.moved.len(),
+    })
+}
+
 /// Copy the bytes for content `hash` from the mirror into `dest`, for `restore`.
 /// Looks in the preserved-version store first, then among the mirror's current
 /// files. Returns `false` if this mirror doesn't have that content.

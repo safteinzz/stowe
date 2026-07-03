@@ -72,6 +72,12 @@ enum Cmd {
         #[arg(default_value = "origin")]
         remote: String,
     },
+    /// Reconcile the working tree to a mirror's current files (remote ➜ local),
+    /// picking up changes made on the mirror by hand. Then commit to record them.
+    Adapt {
+        /// The mirror remote to adopt changes from.
+        remote: String,
+    },
     /// Convert a local remote between the playable `mirror` format and the
     /// content-addressed `backup` format, in place (no bulk re-copy).
     Convert {
@@ -120,6 +126,7 @@ fn main() -> Result<()> {
         Cmd::Push { remotes, force } => cmd_push(&remotes, force),
         Cmd::Pull { remote } => cmd_pull(&remote),
         Cmd::Restore { paths, all, from, remote } => cmd_restore(paths, all, from.as_deref(), &remote),
+        Cmd::Adapt { remote } => cmd_adapt(&remote),
         Cmd::Convert { remote, to } => cmd_convert(&remote, to.as_deref()),
     }
 }
@@ -593,6 +600,29 @@ fn cmd_restore(
     println!(
         "\n{restored} file(s) restored from {}, {skipped} already current.",
         short(&chash)
+    );
+    Ok(())
+}
+
+fn cmd_adapt(name: &str) -> Result<()> {
+    let repo = Repo::find()?;
+    let url = remote_url(&repo, name)?;
+    let root = mirror::local_root(&url).ok_or_else(|| {
+        anyhow!("`stowe adapt` only works on mirror (local:) remotes — `{name}` is {url}")
+    })?;
+    if mirror::detect_format(&root) != mirror::Format::Mirror {
+        bail!("remote `{name}` isn't a mirror — nothing to adapt from");
+    }
+
+    let r = mirror::adapt(&repo, &root)?;
+    if r.is_empty() {
+        println!("already in sync with `{name}` — nothing to adapt.");
+        return Ok(());
+    }
+    println!(
+        "adapted from `{name}`: +{} new, ~{} changed, ⇄{} moved, -{} removed in the working tree.\n\
+         review with `stowe status`, then `stowe add -A && stowe commit` to record.",
+        r.added, r.modified, r.moved, r.removed
     );
     Ok(())
 }
