@@ -378,6 +378,181 @@ pub fn fetch(root: &Path, hash: &str, dest: &Path) -> Result<bool> {
     Ok(true)
 }
 
+// --- format conversion (backup <-> mirror, in place) ------------------------
+
+/// The on-disk shape of a remote.
+#[derive(PartialEq, Eq, Clone, Copy)]
+pub enum Format {
+    /// Playable tree + hidden `.stowe/`.
+    Mirror,
+    /// Content-addressed blobs at the root (`objects/`, `commits/`, `refs/`).
+    Backup,
+    /// Neither — nothing pushed here yet.
+    Empty,
+}
+
+impl Format {
+    pub fn name(self) -> &'static str {
+        match self {
+            Format::Mirror => "mirror",
+            Format::Backup => "backup",
+            Format::Empty => "empty",
+        }
+    }
+}
+
+/// Sniff a local remote's current format.
+pub fn detect_format(root: &Path) -> Format {
+    if dot(root).join("refs").join("main").exists() {
+        Format::Mirror
+    } else if root.join("refs").join("main").exists() {
+        Format::Backup
+    } else {
+        Format::Empty
+    }
+}
+
+/// What a conversion did.
+pub struct ConvertReport {
+    /// Files placed at (or as) their real content.
+    pub files: usize,
+    /// Superseded versions relocated (kept for rollback).
+    pub preserved: usize,
+}
+
+/// Convert an object-store backup into a playable mirror, in place. Blobs are
+/// *renamed* into their real paths (a copy only when the same content is used
+/// by several paths — dedup), so there's no bulk re-copy.
+pub fn backup_to_mirror(root: &Path) -> Result<ConvertReport> {
+    let head = std::fs::read_to_string(root.join("refs").join("main"))
+        .context("reading remote refs/main")?
+        .trim()
+        .to_string();
+    let commit: Commit =
+        serde_json::from_slice(&std::fs::read(root.join("commits").join(format!("{head}.json")))?)?;
+    let manifest = commit.files;
+
+    std::fs::create_dir_all(dot(root).join("objects"))?;
+
+    // Materialize the playable tree from the blobs.
+    let mut placed: HashMap<&str, &str> = HashMap::new(); // hash -> first real path
+    let mut files = 0;
+    for e in &manifest {
+        let dest = root.join(&e.path);
+        ensure_parent(&dest)?;
+        if let Some(first) = placed.get(e.hash.as_str()) {
+            // Same content already laid down elsewhere — copy it (dedup fan-out).
+            std::fs::copy(root.join(first), &dest)?;
+        } else {
+            let blob = root.join("objects").join(&e.hash[..2]).join(&e.hash[2..]);
+            std::fs::rename(&blob, &dest)
+                .with_context(|| format!("materializing {}", e.path))?;
+            placed.insert(&e.hash, &e.path);
+        }
+        files += 1;
+    }
+
+    // Whatever blobs remain are superseded versions — keep them for rollback.
+    let preserved = move_object_tree(&root.join("objects"), &dot(root).join("objects"))?;
+
+    // Relocate history + ref under `.stowe/`.
+    move_flat(&root.join("commits"), &dot(root).join("commits"))?;
+    std::fs::create_dir_all(dot(root).join("refs"))?;
+    std::fs::rename(root.join("refs").join("main"), dot(root).join("refs").join("main"))?;
+    for stale in ["objects", "commits", "refs"] {
+        let _ = std::fs::remove_dir_all(root.join(stale));
+    }
+
+    Ok(ConvertReport { files, preserved })
+}
+
+/// Convert a playable mirror back into an object-store backup, in place. Real
+/// files are *renamed* into content-addressed blobs (dropped when a duplicate
+/// is already stored), then the empty tree is removed.
+pub fn mirror_to_backup(root: &Path) -> Result<ConvertReport> {
+    let head = read_ref(root)?.ok_or_else(|| anyhow!("mirror is empty — nothing to convert"))?;
+    let manifest = read_commit_files(root, &head)?;
+    std::fs::create_dir_all(root.join("objects"))?;
+
+    let mut files = 0;
+    for e in &manifest {
+        let real = root.join(&e.path);
+        let blob = root.join("objects").join(&e.hash[..2]).join(&e.hash[2..]);
+        if blob.exists() {
+            if real.exists() {
+                std::fs::remove_file(&real)?; // content already stored (dedup)
+            }
+        } else if real.exists() {
+            ensure_parent(&blob)?;
+            std::fs::rename(&real, &blob)?;
+            files += 1;
+        }
+    }
+
+    // Preserved old versions rejoin the flat object store.
+    let preserved = move_object_tree(&dot(root).join("objects"), &root.join("objects"))?;
+
+    // History + ref move back to the root.
+    move_flat(&dot(root).join("commits"), &root.join("commits"))?;
+    std::fs::create_dir_all(root.join("refs"))?;
+    std::fs::rename(dot(root).join("refs").join("main"), root.join("refs").join("main"))?;
+    let _ = std::fs::remove_dir_all(dot(root));
+
+    // The now-empty playable directories (everything but the object store) go.
+    for entry in std::fs::read_dir(root)? {
+        let entry = entry?;
+        let name = entry.file_name();
+        if name == "objects" || name == "commits" || name == "refs" {
+            continue;
+        }
+        if entry.file_type()?.is_dir() {
+            let _ = std::fs::remove_dir_all(entry.path());
+        }
+    }
+
+    Ok(ConvertReport { files, preserved })
+}
+
+/// Move every `<shard>/<blob>` from one object tree to another (skip dups).
+fn move_object_tree(src: &Path, dst: &Path) -> Result<usize> {
+    if !src.exists() {
+        return Ok(0);
+    }
+    let mut moved = 0;
+    let shards: Vec<_> = std::fs::read_dir(src)?.collect::<std::result::Result<_, _>>()?;
+    for shard in shards {
+        if !shard.file_type()?.is_dir() {
+            continue;
+        }
+        let dst_shard = dst.join(shard.file_name());
+        let blobs: Vec<_> = std::fs::read_dir(shard.path())?.collect::<std::result::Result<_, _>>()?;
+        for blob in blobs {
+            std::fs::create_dir_all(&dst_shard)?;
+            let target = dst_shard.join(blob.file_name());
+            if target.exists() {
+                std::fs::remove_file(blob.path())?;
+            } else {
+                std::fs::rename(blob.path(), target)?;
+                moved += 1;
+            }
+        }
+    }
+    Ok(moved)
+}
+
+/// Move every file from `src` dir into `dst` dir.
+fn move_flat(src: &Path, dst: &Path) -> Result<()> {
+    if !src.exists() {
+        return Ok(());
+    }
+    std::fs::create_dir_all(dst)?;
+    let entries: Vec<_> = std::fs::read_dir(src)?.collect::<std::result::Result<_, _>>()?;
+    for e in entries {
+        std::fs::rename(e.path(), dst.join(e.file_name()))?;
+    }
+    Ok(())
+}
+
 // --- mirror metadata (the remote `.stowe/`) ---------------------------------
 
 fn read_ref(root: &Path) -> Result<Option<String>> {
