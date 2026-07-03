@@ -7,11 +7,17 @@
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
-/// `.stowe/config` — currently just the named remotes (`name -> url`).
+/// `.stowe/config` — named remotes (`name -> url`) and, optionally, an explicit
+/// on-disk format per remote (`name -> "mirror"|"backup"`). A remote with no
+/// entry in `formats` falls back to the scheme default (local → mirror, s3 →
+/// backup). `serde(default)` keeps configs written before `formats` existed
+/// readable.
 #[derive(Serialize, Deserialize, Default)]
 pub struct Config {
     #[serde(default)]
     pub remotes: BTreeMap<String, String>,
+    #[serde(default)]
+    pub formats: BTreeMap<String, String>,
 }
 
 /// One tracked file in a snapshot.

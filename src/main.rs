@@ -110,7 +110,14 @@ enum Cmd {
 #[derive(Subcommand)]
 enum RemoteCmd {
     /// Add or update a named remote: `stowe remote add origin local:/path`.
-    Add { name: String, url: String },
+    Add {
+        name: String,
+        url: String,
+        /// On-disk format: `mirror` (playable, local only) or `backup` (blobs).
+        /// Omit to use the scheme default (local → mirror, s3 → backup).
+        #[arg(long, value_parser = ["mirror", "backup"])]
+        format: Option<String>,
+    },
     /// List configured remotes.
     List,
 }
@@ -322,11 +329,23 @@ fn cmd_log() -> Result<()> {
 fn cmd_remote(cmd: Option<RemoteCmd>) -> Result<()> {
     let repo = Repo::find()?;
     match cmd {
-        Some(RemoteCmd::Add { name, url }) => {
+        Some(RemoteCmd::Add { name, url, format }) => {
             let mut cfg = repo.config()?;
+            match &format {
+                Some(fmt) => {
+                    if fmt == "mirror" && mirror::local_root(&url).is_none() {
+                        bail!("`mirror` format needs a local path — {url} can't be a mirror");
+                    }
+                    cfg.formats.insert(name.clone(), fmt.clone());
+                }
+                // No override → fall back to the scheme default.
+                None => {
+                    cfg.formats.remove(&name);
+                }
+            }
             cfg.remotes.insert(name.clone(), url.clone());
             repo.save_config(&cfg)?;
-            println!("remote `{name}` -> {url}");
+            println!("remote `{name}` -> {url} ({} format)", remote_format(&cfg, &name, &url).name());
         }
         // Bare `stowe remote` and `stowe remote list` both just list.
         None | Some(RemoteCmd::List) => {
@@ -336,11 +355,22 @@ fn cmd_remote(cmd: Option<RemoteCmd>) -> Result<()> {
                 println!("  stowe remote add origin local:/path/to/backup");
             }
             for (name, url) in &cfg.remotes {
-                println!("{name}\t{url}");
+                println!("{name}\t{url}\t[{}]", remote_format(&cfg, name, url).name());
             }
         }
     }
     Ok(())
+}
+
+/// The on-disk format for a remote: an explicit config override, or the scheme
+/// default (local paths are playable mirrors, everything else is an object store).
+fn remote_format(cfg: &model::Config, name: &str, url: &str) -> mirror::Format {
+    match cfg.formats.get(name).map(String::as_str) {
+        Some("backup") => mirror::Format::Backup,
+        Some("mirror") => mirror::Format::Mirror,
+        _ if mirror::local_root(url).is_some() => mirror::Format::Mirror,
+        _ => mirror::Format::Backup,
+    }
 }
 
 fn cmd_push(names: &[String], force: bool) -> Result<()> {
@@ -350,21 +380,24 @@ fn cmd_push(names: &[String], force: bool) -> Result<()> {
         .ok_or_else(|| anyhow!("nothing committed yet — `stowe commit` first"))?;
 
     // Resolve all targets up front so a bad name fails before any work. Each
-    // remote is dispatched by scheme: `local:` (or a bare path) is a playable
-    // mirror; everything else (`s3://`) is the object-store format.
+    // remote is dispatched by its configured format (mirror vs object store).
     let targets = if names.is_empty() {
         vec!["origin".to_string()]
     } else {
         names.to_vec()
     };
+    let cfg = repo.config()?;
     let mut resolved = Vec::new();
     for name in &targets {
         resolved.push((name.clone(), remote_url(&repo, name)?));
     }
 
     for (name, url) in &resolved {
-        match mirror::local_root(url) {
-            Some(root) => {
+        match remote_format(&cfg, name, url) {
+            mirror::Format::Mirror => {
+                let root = mirror::local_root(url).ok_or_else(|| {
+                    anyhow!("remote `{name}` is set to mirror but {url} isn't a local path")
+                })?;
                 let r = mirror::sync(&repo, &root, force)?;
                 println!(
                     "mirrored to `{name}`: +{} new, ~{} changed, ⇄{} moved, -{} removed, \
@@ -372,7 +405,7 @@ fn cmd_push(names: &[String], force: bool) -> Result<()> {
                     r.added, r.modified, r.moved, r.removed, r.new_commits, short(&head)
                 );
             }
-            None => push_objects(&repo, name, url, &head)?,
+            _ => push_objects(&repo, name, url, &head)?,
         }
     }
     Ok(())
@@ -434,8 +467,10 @@ fn cmd_pull(name: &str) -> Result<()> {
     let repo = Repo::find()?;
     let url = remote_url(&repo, name)?;
 
-    // A local remote is a playable mirror — pull rebuilds from its real files.
-    if let Some(root) = mirror::local_root(&url) {
+    // A mirror remote is pulled by rebuilding from its real files.
+    if remote_format(&repo.config()?, name, &url) == mirror::Format::Mirror {
+        let root = mirror::local_root(&url)
+            .ok_or_else(|| anyhow!("remote `{name}` is set to mirror but {url} isn't local"))?;
         let r = mirror::pull(&repo, &root)?;
         println!(
             "pulled from `{name}`: now at {} ({} new commits, {} files written)",
@@ -560,7 +595,13 @@ fn cmd_restore(
     // versions) or an object store. stowe keeps no local copies, so restoring
     // never doubles your disk.
     let url = remote_url(&repo, remote_name)?;
-    let mirror_root = mirror::local_root(&url);
+    let mirror_root = match remote_format(&repo.config()?, remote_name, &url) {
+        mirror::Format::Mirror => Some(
+            mirror::local_root(&url)
+                .ok_or_else(|| anyhow!("remote `{remote_name}` is set to mirror but isn't local"))?,
+        ),
+        _ => None,
+    };
     let backend = match &mirror_root {
         Some(_) => None,
         None => Some(remote::open(&url)?),
@@ -660,6 +701,13 @@ fn cmd_convert(name: &str, to: Option<&str>) -> Result<()> {
         mirror::Format::Backup => mirror::mirror_to_backup(&root)?,
         mirror::Format::Empty => unreachable!(),
     };
+
+    // Persist the new format so the next `push` keeps it (otherwise the
+    // scheme default — mirror for local — would flip it back).
+    let mut cfg = repo.config()?;
+    cfg.formats.insert(name.to_string(), target.name().to_string());
+    repo.save_config(&cfg)?;
+
     println!(
         "converted `{name}` to {}: {} files, {} preserved version(s).",
         target.name(),
