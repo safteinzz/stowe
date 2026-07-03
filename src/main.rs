@@ -5,6 +5,7 @@
 //! is just a dumb file store. See the module docs for the on-disk layout.
 
 mod audio;
+mod mirror;
 mod model;
 mod remote;
 mod repo;
@@ -58,10 +59,13 @@ enum Cmd {
         #[command(subcommand)]
         cmd: Option<RemoteCmd>,
     },
-    /// Upload new objects + history to one or more remotes (default: origin).
+    /// Sync one or more remotes to the latest commit (default: origin).
     Push {
         /// Remotes to push to. Omit for `origin`; list several to fan out.
         remotes: Vec<String>,
+        /// For mirror remotes: overwrite changes made on the mirror outside stowe.
+        #[arg(long)]
+        force: bool,
     },
     /// Bring the working tree up to the remote's latest commit.
     Pull {
@@ -104,7 +108,7 @@ fn main() -> Result<()> {
         Cmd::Commit { message } => cmd_commit(&message),
         Cmd::Log => cmd_log(),
         Cmd::Remote { cmd, .. } => cmd_remote(cmd),
-        Cmd::Push { remotes } => cmd_push(&remotes),
+        Cmd::Push { remotes, force } => cmd_push(&remotes, force),
         Cmd::Pull { remote } => cmd_pull(&remote),
         Cmd::Restore { paths, all, from, remote } => cmd_restore(paths, all, from.as_deref(), &remote),
     }
@@ -320,11 +324,43 @@ fn cmd_remote(cmd: Option<RemoteCmd>) -> Result<()> {
     Ok(())
 }
 
-fn cmd_push(names: &[String]) -> Result<()> {
+fn cmd_push(names: &[String], force: bool) -> Result<()> {
     let repo = Repo::find()?;
     let head = repo
         .head()?
         .ok_or_else(|| anyhow!("nothing committed yet — `stowe commit` first"))?;
+
+    // Resolve all targets up front so a bad name fails before any work. Each
+    // remote is dispatched by scheme: `local:` (or a bare path) is a playable
+    // mirror; everything else (`s3://`) is the object-store format.
+    let targets = if names.is_empty() {
+        vec!["origin".to_string()]
+    } else {
+        names.to_vec()
+    };
+    let mut resolved = Vec::new();
+    for name in &targets {
+        resolved.push((name.clone(), remote_url(&repo, name)?));
+    }
+
+    for (name, url) in &resolved {
+        match mirror::local_root(url) {
+            Some(root) => {
+                let r = mirror::sync(&repo, &root, force)?;
+                println!(
+                    "mirrored to `{name}`: +{} new, ~{} changed, ⇄{} moved, -{} removed, \
+                     {} new commits -> {}",
+                    r.added, r.modified, r.moved, r.removed, r.new_commits, short(&head)
+                );
+            }
+            None => push_objects(&repo, name, url, &head)?,
+        }
+    }
+    Ok(())
+}
+
+/// Push to an object-store (non-local) remote: content-addressed blobs + history.
+fn push_objects(repo: &Repo, name: &str, url: &str, head: &str) -> Result<()> {
     let history = repo.history()?;
     let head_commit = &history[0].1;
 
@@ -332,7 +368,7 @@ fn cmd_push(names: &[String]) -> Result<()> {
     // working tree. Index the tree by *content hash* rather than path, so a file
     // renamed since the commit is still found (its content lives under the new
     // name). Hash-only + cached, so this scan is cheap.
-    let working = scan::scan(&repo, &repo.head_manifest()?, false)?;
+    let working = scan::scan(repo, &repo.head_manifest()?, false)?;
     let mut by_hash: HashMap<&str, &str> = HashMap::new();
     for e in &working {
         by_hash.entry(&e.hash).or_insert(&e.path);
@@ -354,47 +390,43 @@ fn cmd_push(names: &[String]) -> Result<()> {
         }
     }
 
-    // Resolve all targets up front so a bad name fails before any upload.
-    let targets = if names.is_empty() {
-        vec!["origin".to_string()]
-    } else {
-        names.to_vec()
-    };
-    let mut backends = Vec::new();
-    for name in &targets {
-        let url = remote_url(&repo, name)?;
-        backends.push((name.clone(), remote::open(&url)?));
-    }
+    let backend = remote::open(url)?;
+    let new_objects = backend.put_files(to_upload)?;
 
-    for (name, backend) in &backends {
-        // 1. Upload object contents (deduped; the remote skips ones it has).
-        let new_objects = backend.put_files(to_upload.clone())?;
-
-        // 2. Upload commit metadata for the whole history.
-        let mut new_commits = 0;
-        for (hash, _) in &history {
-            let key = format!("commits/{hash}.json");
-            if !backend.exists(&key)? {
-                let bytes = std::fs::read(repo.dir.join("commits").join(format!("{hash}.json")))?;
-                backend.put_bytes(&key, &bytes)?;
-                new_commits += 1;
-            }
+    let mut new_commits = 0;
+    for (hash, _) in &history {
+        let key = format!("commits/{hash}.json");
+        if !backend.exists(&key)? {
+            let bytes = std::fs::read(repo.dir.join("commits").join(format!("{hash}.json")))?;
+            backend.put_bytes(&key, &bytes)?;
+            new_commits += 1;
         }
-
-        // 3. Move the remote's pointer.
-        backend.put_bytes("refs/main", head.as_bytes())?;
-
-        println!(
-            "pushed to `{name}`: {new_objects} new objects, {new_commits} new commits, refs/main -> {}",
-            short(&head)
-        );
     }
+    backend.put_bytes("refs/main", head.as_bytes())?;
+
+    println!(
+        "pushed to `{name}`: {new_objects} new objects, {new_commits} new commits, refs/main -> {}",
+        short(head)
+    );
     Ok(())
 }
 
 fn cmd_pull(name: &str) -> Result<()> {
     let repo = Repo::find()?;
     let url = remote_url(&repo, name)?;
+
+    // A local remote is a playable mirror — pull rebuilds from its real files.
+    if let Some(root) = mirror::local_root(&url) {
+        let r = mirror::pull(&repo, &root)?;
+        println!(
+            "pulled from `{name}`: now at {} ({} new commits, {} files written)",
+            short(&r.head),
+            r.new_commits,
+            r.written
+        );
+        return Ok(());
+    }
+
     let backend = remote::open(&url)?;
     if !backend.exists("refs/main")? {
         bail!("remote `{name}` is empty — nothing to pull");
@@ -505,29 +537,45 @@ fn cmd_restore(
         out
     };
 
-    // Bytes come from the remote's object store — stowe keeps no local copies,
-    // so restoring never doubles your disk.
+    // Bytes come from the remote — a playable mirror (real files + preserved
+    // versions) or an object store. stowe keeps no local copies, so restoring
+    // never doubles your disk.
     let url = remote_url(&repo, remote_name)?;
-    let backend = remote::open(&url)?;
+    let mirror_root = mirror::local_root(&url);
+    let backend = match &mirror_root {
+        Some(_) => None,
+        None => Some(remote::open(&url)?),
+    };
 
     let mut restored = 0usize;
     let mut skipped = 0usize;
     for e in &targets {
         let dest = repo.root.join(&e.path);
-        // Already the wanted content? Leave it (and don't re-download).
+        // Already the wanted content? Leave it (and don't re-fetch).
         if dest.exists() && scan::hash_file(&dest)? == e.hash {
             skipped += 1;
             continue;
         }
-        let key = remote::object_key(&e.hash);
-        if !backend.exists(&key)? {
+        let got = match &mirror_root {
+            Some(root) => mirror::fetch(root, &e.hash, &dest)?,
+            None => {
+                let backend = backend.as_ref().unwrap();
+                let key = remote::object_key(&e.hash);
+                if backend.exists(&key)? {
+                    backend.get_file(&key, &dest)?;
+                    true
+                } else {
+                    false
+                }
+            }
+        };
+        if !got {
             bail!(
                 "content for `{}` (commit {}) isn't on remote `{remote_name}` — was it pushed?",
                 e.path,
                 short(&chash)
             );
         }
-        backend.get_file(&key, &dest)?;
         restored += 1;
         println!("restored {}", e.path);
     }
