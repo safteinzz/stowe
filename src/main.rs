@@ -21,8 +21,22 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use model::{Commit, Entry, Manifest};
 use repo::Repo;
 
+/// Shown at the bottom of `stowe --help`: the one distinction the command list
+/// can't convey — that a remote is either a playable mirror or a blob backup.
+const REMOTES_NOTE: &str = "Every remote is one of two shapes:
+  mirror   real, playable folders — a drive or phone you can browse & play
+  backup   deduped content-addressed blobs — S3, or a space-saving archive
+Local remotes default to mirror, s3:// to backup; set it with `remote add --format`.
+Run `stowe <command> --help` for the full detail of any command.";
+
 #[derive(Parser)]
-#[command(name = "stowe", version, about = "git for files, any remote")]
+#[command(
+    name = "stowe",
+    version,
+    about = "git for the files git chokes on — versioned, deduped, playable backups on any remote",
+    after_help = REMOTES_NOTE,
+    arg_required_else_help = true
+)]
 struct Cli {
     #[command(subcommand)]
     cmd: Cmd,
@@ -30,11 +44,13 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Cmd {
-    /// Create a new repo (`.stowe/`) in the current directory.
+    /// Create a new repo (.stowe/) in the current folder
     Init,
-    /// Show what changed in the working tree since the last commit.
+    /// Show what changed since the last commit
     Status,
-    /// Stage files for the next commit: specific paths, or `-A` for everything.
+    /// Stage files for the next commit  <paths...>
+    ///   -A          stage the entire working tree
+    #[command(verbatim_doc_comment)]
     Add {
         /// Files or directories to stage. Omit and pass `-A` to stage the whole tree.
         paths: Vec<std::path::PathBuf>,
@@ -42,16 +58,21 @@ enum Cmd {
         #[arg(short = 'A', long)]
         all: bool,
     },
-    /// Discard the staging index (the working tree is left untouched).
+    /// Discard the staging index (working tree untouched)
     Unstage,
-    /// Record the staged snapshot as a commit.
+    /// Record the staged snapshot as a commit
+    ///   -m MSG      commit message
+    #[command(verbatim_doc_comment)]
     Commit {
         #[arg(short = 'm', long)]
         message: String,
     },
-    /// Show commit history (newest first).
+    /// Show commit history (newest first)
     Log,
-    /// Manage remotes. With no subcommand, lists them (name + URL).
+    /// Manage remotes — no subcommand lists them
+    ///   add NAME URL            add or update a remote
+    ///     --format mirror|backup   on-disk shape (default: local→mirror)
+    #[command(verbatim_doc_comment)]
     Remote {
         /// Accepted for git muscle memory; stowe always shows URLs anyway.
         #[arg(short, long)]
@@ -59,7 +80,9 @@ enum Cmd {
         #[command(subcommand)]
         cmd: Option<RemoteCmd>,
     },
-    /// Sync one or more remotes to the latest commit (default: origin).
+    /// Sync remote(s) to the latest commit  [remotes...]
+    ///   --force     overwrite by-hand changes on a mirror
+    #[command(verbatim_doc_comment)]
     Push {
         /// Remotes to push to. Omit for `origin`; list several to fan out.
         remotes: Vec<String>,
@@ -67,30 +90,22 @@ enum Cmd {
         #[arg(long)]
         force: bool,
     },
-    /// Bring the working tree up to the remote's latest commit.
+    /// Rebuild the working tree from a remote  [remote]
     Pull {
         #[arg(default_value = "origin")]
         remote: String,
     },
-    /// Reconcile the working tree to a mirror's current files (remote ➜ local),
-    /// picking up changes made on the mirror by hand. Then commit to record them.
+    /// Pull a mirror's by-hand changes into local (remote ➜ local)  [remote]
     Adapt {
         /// The mirror remote to adopt changes from (default: origin).
         #[arg(default_value = "origin")]
         remote: String,
     },
-    /// Convert a local remote between the playable `mirror` format and the
-    /// content-addressed `backup` format, in place (no bulk re-copy).
-    Convert {
-        /// The remote to convert (default: origin).
-        #[arg(default_value = "origin")]
-        remote: String,
-        /// Target format. Omit to flip to the other one.
-        #[arg(long, value_parser = ["mirror", "backup"])]
-        to: Option<String>,
-    },
-    /// Restore committed file(s) — undo working-tree changes, or recover an
-    /// older version. Bytes come from a remote's object store.
+    /// Recover committed file(s) from a remote  <paths...>
+    ///   -A          restore the whole snapshot
+    ///   --from C    the version from commit C (else HEAD)
+    ///   --remote R  which remote to fetch from (default: origin)
+    #[command(verbatim_doc_comment)]
     Restore {
         /// Files to restore. Omit and pass `-A` for the whole snapshot.
         paths: Vec<std::path::PathBuf>,
@@ -104,6 +119,17 @@ enum Cmd {
         /// Remote to fetch object bytes from.
         #[arg(long, default_value = "origin")]
         remote: String,
+    },
+    /// Flip a remote between mirror and backup, in place  [remote]
+    ///   --to mirror|backup   target format (omit to flip)
+    #[command(verbatim_doc_comment)]
+    Convert {
+        /// The remote to convert (default: origin).
+        #[arg(default_value = "origin")]
+        remote: String,
+        /// Target format. Omit to flip to the other one.
+        #[arg(long, value_parser = ["mirror", "backup"])]
+        to: Option<String>,
     },
 }
 
