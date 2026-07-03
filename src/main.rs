@@ -41,6 +41,8 @@ enum Cmd {
         #[arg(short = 'A', long)]
         all: bool,
     },
+    /// Discard the staging index (the working tree is left untouched).
+    Unstage,
     /// Record the staged snapshot as a commit.
     Commit {
         #[arg(short = 'm', long)]
@@ -82,6 +84,7 @@ fn main() -> Result<()> {
         Cmd::Init => cmd_init(),
         Cmd::Status => cmd_status(),
         Cmd::Add { paths, all } => cmd_add(paths, all),
+        Cmd::Unstage => cmd_unstage(),
         Cmd::Commit { message } => cmd_commit(&message),
         Cmd::Log => cmd_log(),
         Cmd::Remote { cmd, .. } => cmd_remote(cmd),
@@ -221,6 +224,18 @@ fn cmd_add(paths: Vec<PathBuf>, all: bool) -> Result<()> {
 /// repo root, i.e. empty).
 fn under_prefix(path: &str, prefix: &str) -> bool {
     prefix.is_empty() || path == prefix || path.starts_with(&format!("{prefix}/"))
+}
+
+fn cmd_unstage() -> Result<()> {
+    let repo = Repo::find()?;
+    match repo.read_index()? {
+        None => println!("nothing staged."),
+        Some(staged) => {
+            repo.clear_index()?;
+            println!("unstaged {} file(s); working tree left as-is.", staged.len());
+        }
+    }
+    Ok(())
 }
 
 fn cmd_commit(message: &str) -> Result<()> {

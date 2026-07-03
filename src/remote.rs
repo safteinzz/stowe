@@ -12,7 +12,10 @@
 use anyhow::{Context, Result, bail};
 use futures::stream::{self, StreamExt};
 use opendal::{Operator, services};
+use std::io::{IsTerminal, Write};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::Arc;
 use tokio::io::AsyncReadExt;
 
 /// How many object uploads to keep in flight at once.
@@ -75,7 +78,18 @@ fn build_operator(url: &str) -> Result<Operator> {
     // Filesystem backend. Make sure the root exists so first push works.
     std::fs::create_dir_all(local_path)
         .with_context(|| format!("creating remote dir {local_path}"))?;
-    Ok(Operator::new(services::Fs::default().root(local_path))?.finish())
+    // Write to a temp file and rename into place on close, so a killed push
+    // (Ctrl+C, crash, unplugged drive) never leaves a corrupt file sitting
+    // under its final content-hash key — which future pushes would then
+    // mistake for a complete, valid object and skip forever.
+    let tmp_dir = Path::new(local_path).join(".stowe-tmp");
+    std::fs::create_dir_all(&tmp_dir)?;
+    Ok(Operator::new(
+        services::Fs::default()
+            .root(local_path)
+            .atomic_write_dir(&tmp_dir.to_string_lossy()),
+    )?
+    .finish())
 }
 
 impl Remote {
@@ -109,21 +123,37 @@ impl Remote {
     /// Runs up to [`UPLOAD_CONCURRENCY`] uploads at once. Returns how many were
     /// actually uploaded (i.e. weren't already there — that's the dedup skip).
     pub fn put_files(&self, items: Vec<(String, PathBuf)>) -> Result<usize> {
+        let total = items.len();
+        let done = Arc::new(AtomicUsize::new(0));
+        // Live progress on stderr, terminal-only — so `stowe push` never looks
+        // hung on a big upload, while piped/redirected output stays clean.
+        let show = std::io::stderr().is_terminal();
         self.rt.block_on(async {
             let op = &self.op;
+            let done = &done;
             let results: Vec<Result<usize>> = stream::iter(items)
                 .map(|(key, src)| async move {
-                    if op.exists(&key).await? {
+                    let r = if op.exists(&key).await? {
                         Ok(0usize)
                     } else {
                         upload_one(op, &key, &src).await?;
                         Ok(1usize)
+                    };
+                    let n = done.fetch_add(1, Ordering::Relaxed) + 1;
+                    if show {
+                        eprint!("\r\x1b[Kpushing... {n}/{total}");
+                        let _ = std::io::stderr().flush();
                     }
+                    r
                 })
                 .buffer_unordered(UPLOAD_CONCURRENCY)
                 .collect()
                 .await;
 
+            if show && total > 0 {
+                eprint!("\r\x1b[K"); // wipe the progress line before the summary
+                let _ = std::io::stderr().flush();
+            }
             let mut uploaded = 0;
             for r in results {
                 uploaded += r?;
