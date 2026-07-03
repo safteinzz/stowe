@@ -7,12 +7,21 @@
 //! same. That's what lets `diff` recognise a re-tagged song as a move rather
 //! than an add+remove.
 //!
-//! It does *not* survive re-encoding or trimming (those change the samples).
-//! Those fall back to being treated as new content — an accepted trade for a
-//! single pure-Rust dependency and zero external binaries.
+//! It does *not* survive re-encoding (that changes the samples). To keep `add`
+//! fast on big libraries, we only decode the **first [`FP_SECONDS`] seconds** —
+//! decoding a whole song is ~99% of an import's cost, and the intro alone is
+//! more than enough to recognise the same audio after a rename/re-tag. A happy
+//! side effect: it's immune to *end*-trimming (silence chopped off the tail no
+//! longer changes the fingerprint). The trade-offs are that a song trimmed at
+//! the *start* reads as new, and two different songs with byte-identical intros
+//! of this length would collide — both negligible for real music.
 
 use anyhow::Result;
 use std::path::Path;
+
+/// How many seconds of decoded audio to fold into the fingerprint. Long enough
+/// to be effectively unique per song, short enough to keep `add` snappy.
+const FP_SECONDS: u64 = 30;
 
 use symphonia::core::codecs::{CodecParameters, audio::AudioDecoderOptions};
 use symphonia::core::formats::probe::Hint;
@@ -86,6 +95,10 @@ fn decode_hash(path: &Path) -> Result<Option<String>> {
 
     let mut hasher = blake3::Hasher::new();
     let mut header_done = false;
+    // Stop once we've folded in FP_SECONDS worth of interleaved samples. Set to
+    // the real target the moment we learn the rate/channels (first packet).
+    let mut target: u64 = u64::MAX;
+    let mut hashed_samples: u64 = 0;
     let mut interleaved: Vec<i16> = Vec::new();
     // Reused byte buffer: we feed blake3 one big slice per packet rather than
     // one call per sample (a song is tens of millions of samples — per-sample
@@ -107,8 +120,12 @@ fn decode_hash(path: &Path) -> Result<Option<String>> {
 
         if !header_done {
             let spec = decoded.spec();
-            hasher.update(&spec.rate().to_le_bytes());
-            hasher.update(&(spec.channels().count() as u32).to_le_bytes());
+            let rate = spec.rate() as u64;
+            let channels = spec.channels().count() as u64;
+            hasher.update(&(rate as u32).to_le_bytes());
+            hasher.update(&(channels as u32).to_le_bytes());
+            // rate * channels = interleaved samples per second.
+            target = rate.saturating_mul(channels).saturating_mul(FP_SECONDS);
             header_done = true;
         }
 
@@ -124,6 +141,12 @@ fn decode_hash(path: &Path) -> Result<Option<String>> {
             bytes.extend_from_slice(&s.to_le_bytes());
         }
         hasher.update(&bytes);
+
+        // Enough of the intro captured — stop decoding the rest of the file.
+        hashed_samples += n as u64;
+        if hashed_samples >= target {
+            break;
+        }
     }
 
     // Nothing decoded (e.g. a 0-byte file slipping past the extension check) —

@@ -3,12 +3,46 @@
 use anyhow::Result;
 use rayon::prelude::*;
 use std::collections::HashMap;
-use std::io::{BufReader, Read};
+use std::io::{BufReader, IsTerminal, Read, Write};
+use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::UNIX_EPOCH;
 use walkdir::WalkDir;
 
 use crate::model::{Entry, Manifest};
 use crate::repo::Repo;
+
+/// A one-line, in-place progress indicator for the long phases of a scan.
+///
+/// Big trees make `status`/`add` sit for a few seconds; without a sign of life
+/// that reads as a hang. So we stream a live count to *stderr*, and only when
+/// it's a terminal — piped/redirected output stays byte-for-byte clean, and the
+/// real result always goes to stdout. Ticking is throttled by the caller so the
+/// print cost never shows up in the timing.
+struct Progress {
+    show: bool,
+}
+
+impl Progress {
+    fn new() -> Self {
+        Progress {
+            show: std::io::stderr().is_terminal(),
+        }
+    }
+    /// Overwrite the current line with `msg` (only if attached to a terminal).
+    fn tick(&self, msg: &str) {
+        if self.show {
+            eprint!("\r\x1b[K{msg}");
+            let _ = std::io::stderr().flush();
+        }
+    }
+    /// Wipe the progress line so it doesn't linger above the real output.
+    fn clear(&self) {
+        if self.show {
+            eprint!("\r\x1b[K");
+            let _ = std::io::stderr().flush();
+        }
+    }
+}
 
 /// blake3 of a file's full content, streamed so we never load big files whole.
 pub fn hash_file(path: &std::path::Path) -> Result<String> {
@@ -101,12 +135,60 @@ fn cache_from(manifest: &Manifest) -> HashMap<String, Cached> {
         .collect()
 }
 
-/// One walked working-tree file, before its content is read.
+/// One walked working-tree file, with the cheap metadata (size+mtime) already
+/// captured by the walk. Content hashing is what's deferred to the parallel
+/// pass in [`scan`].
 struct Found {
     rel: String,
     abs: std::path::PathBuf,
     size: u64,
     mtime: i64,
+}
+
+/// Recursively collect every file under `dir` into `out`, skipping `.stowe`.
+///
+/// Uses `read_dir` + [`std::fs::DirEntry::metadata`], so each file's size/mtime
+/// comes from an `fstatat` relative to the already-open directory fd. That
+/// matters enormously on deep trees over FUSE/network mounts: WalkDir's
+/// `metadata()` instead `stat`s the full absolute path, making the kernel
+/// re-resolve *every* directory component per file — e.g. ~5× slower on an
+/// NTFS-over-FUSE tree 10+ levels deep. Symlinks (and other non-regular
+/// entries) are skipped, matching the old non-following WalkDir behavior.
+fn collect_files(
+    root: &std::path::Path,
+    dir: &std::path::Path,
+    out: &mut Vec<Found>,
+    prog: &Progress,
+) -> Result<()> {
+    for entry in std::fs::read_dir(dir)? {
+        let entry = entry?;
+        if entry.file_name() == std::ffi::OsStr::new(".stowe") {
+            continue;
+        }
+        let ft = entry.file_type()?;
+        if ft.is_dir() {
+            collect_files(root, &entry.path(), out, prog)?;
+        } else if ft.is_file() {
+            let meta = entry.metadata()?;
+            let mtime = meta
+                .modified()?
+                .duration_since(UNIX_EPOCH)
+                .map(|d| d.as_secs() as i64)
+                .unwrap_or(0);
+            let abs = entry.path();
+            out.push(Found {
+                rel: rel_path(root, &abs),
+                abs,
+                size: meta.len(),
+                mtime,
+            });
+            // Cheap to print, but throttle so it's ~invisible in the timing.
+            if out.len() % 1000 == 0 {
+                prog.tick(&format!("scanning... {} files", out.len()));
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Walk the working tree and build a fresh, path-sorted manifest.
@@ -121,41 +203,21 @@ struct Found {
 /// in the snapshot, which is what lets a later re-tag+rename read as a move.
 pub fn scan(repo: &Repo, cache_source: &Manifest, fingerprint: bool) -> Result<Manifest> {
     let cache = cache_from(cache_source);
+    let prog = Progress::new();
 
-    // WalkDir is sequential; gather the files first, then read their contents in
-    // parallel below — hashing and decoding are independent per file.
+    // Walk the tree, capturing each file's size+mtime via a dirfd-relative stat
+    // (see `collect_files`). This is the dominant cost of a clean-tree `status`,
+    // and — because it goes through a single FUSE daemon on mounted drives —
+    // parallelising it only adds contention, so the walk stays sequential.
     let mut found: Vec<Found> = Vec::new();
-    for entry in WalkDir::new(&repo.root).into_iter().filter_entry(|e| {
-        // Never descend into our own metadata directory.
-        e.file_name() != ".stowe"
-    }) {
-        let entry = entry?;
-        if !entry.file_type().is_file() {
-            continue;
-        }
-        let abs = entry.path();
-        let rel = abs
-            .strip_prefix(&repo.root)
-            .unwrap_or(abs)
-            .to_string_lossy()
-            .replace('\\', "/");
-        let meta = entry.metadata()?;
-        let size = meta.len();
-        let mtime = meta
-            .modified()?
-            .duration_since(UNIX_EPOCH)
-            .map(|d| d.as_secs() as i64)
-            .unwrap_or(0);
-        found.push(Found {
-            rel,
-            abs: abs.to_path_buf(),
-            size,
-            mtime,
-        });
-    }
+    collect_files(&repo.root, &repo.root, &mut found, &prog)?;
 
-    // Spread the per-file work across cores. A cache hit (unchanged size+mtime)
-    // reuses the stored hash/fingerprint and reads nothing.
+    // Content hashing *is* worth parallelising (CPU-bound, per-file independent),
+    // so fan it across cores. A cache hit (unchanged size+mtime) reuses the
+    // stored hash/fingerprint and reads no content — so a clean tree does no I/O
+    // here at all. `hashed` counts only the files we actually read, which is the
+    // slow work worth reporting (a re-`add` of a big library, cold cache, etc.).
+    let hashed = AtomicUsize::new(0);
     let mut out: Manifest = found
         .par_iter()
         .map(|f| -> Result<Entry> {
@@ -168,6 +230,11 @@ pub fn scan(repo: &Repo, cache_source: &Manifest, fingerprint: bool) -> Result<M
                     } else {
                         None
                     };
+                    let n = hashed.fetch_add(1, Ordering::Relaxed) + 1;
+                    if n % 256 == 0 {
+                        let what = if fingerprint { "hashing + fingerprinting" } else { "hashing" };
+                        prog.tick(&format!("{what}... {n} files"));
+                    }
                     (hash, fp)
                 }
             };
@@ -181,6 +248,7 @@ pub fn scan(repo: &Repo, cache_source: &Manifest, fingerprint: bool) -> Result<M
         })
         .collect::<Result<_>>()?;
 
+    prog.clear();
     out.sort_by(|a, b| a.path.cmp(&b.path));
     Ok(out)
 }
