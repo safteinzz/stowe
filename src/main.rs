@@ -75,13 +75,15 @@ enum Cmd {
     /// Reconcile the working tree to a mirror's current files (remote ➜ local),
     /// picking up changes made on the mirror by hand. Then commit to record them.
     Adapt {
-        /// The mirror remote to adopt changes from.
+        /// The mirror remote to adopt changes from (default: origin).
+        #[arg(default_value = "origin")]
         remote: String,
     },
     /// Convert a local remote between the playable `mirror` format and the
     /// content-addressed `backup` format, in place (no bulk re-copy).
     Convert {
-        /// The remote to convert.
+        /// The remote to convert (default: origin).
+        #[arg(default_value = "origin")]
         remote: String,
         /// Target format. Omit to flip to the other one.
         #[arg(long, value_parser = ["mirror", "backup"])]
