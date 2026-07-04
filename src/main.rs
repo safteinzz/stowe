@@ -1,4 +1,4 @@
-//! stowe — git for files, any remote.
+//! stowe - git for files, any remote.
 //!
 //! A git-shaped CLI for versioning large/binary files. Linear history (one
 //! "main", no branches), content-addressed dedup, and a pluggable remote that
@@ -22,10 +22,10 @@ use model::{Commit, Entry, Manifest};
 use repo::Repo;
 
 /// Shown at the bottom of `stowe --help`: the one distinction the command list
-/// can't convey — that a remote is either a playable mirror or a blob backup.
+/// can't convey - that a remote is either a playable mirror or a blob backup.
 const REMOTES_NOTE: &str = "Every remote is one of two shapes:
-  mirror   real, playable folders — a drive or phone you can browse & play
-  backup   deduped content-addressed blobs — S3, or a space-saving archive
+  mirror   real, playable folders - a drive or phone you can browse & play
+  backup   deduped content-addressed blobs - S3, or a space-saving archive
 Local remotes default to mirror, s3:// to backup; set it with `remote add --format`.
 Run `stowe <command> --help` for the full detail of any command.";
 
@@ -33,7 +33,7 @@ Run `stowe <command> --help` for the full detail of any command.";
 #[command(
     name = "stowe",
     version,
-    about = "git for the files git chokes on — versioned, deduped, playable backups on any remote",
+    about = "git for the files git chokes on: versioned, deduped, playable backups on any remote",
     after_help = REMOTES_NOTE,
     arg_required_else_help = true
 )]
@@ -69,7 +69,7 @@ enum Cmd {
     },
     /// Show commit history (newest first)
     Log,
-    /// Manage remotes — no subcommand lists them
+    /// Manage remotes - no subcommand lists them
     ///   add NAME URL            add or update a remote
     ///     --format mirror|backup   on-disk shape (default: local→mirror)
     #[command(verbatim_doc_comment)]
@@ -131,6 +131,14 @@ enum Cmd {
         #[arg(long, value_parser = ["mirror", "backup"])]
         to: Option<String>,
     },
+    /// Update stowe to the latest release
+    ///   -y          skip the confirmation prompt
+    #[command(verbatim_doc_comment)]
+    Update {
+        /// Skip the confirmation prompt.
+        #[arg(short, long)]
+        yes: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -163,6 +171,7 @@ fn main() -> Result<()> {
         Cmd::Restore { paths, all, from, remote } => cmd_restore(paths, all, from.as_deref(), &remote),
         Cmd::Adapt { remote } => cmd_adapt(&remote),
         Cmd::Convert { remote, to } => cmd_convert(&remote, to.as_deref()),
+        Cmd::Update { yes } => cmd_update(yes),
     }
 }
 
@@ -178,7 +187,7 @@ fn cmd_init() -> Result<()> {
 fn cmd_status() -> Result<()> {
     let repo = Repo::find()?;
     let head = repo.head_manifest()?;
-    // `status` is a quick "what changed?" — hash only, no audio decoding.
+    // `status` is a quick "what changed?" - hash only, no audio decoding.
     let working = scan::scan(&repo, &head, false)?;
     // The staging baseline is the index if anything's staged, else HEAD.
     let base = repo.read_index()?.unwrap_or_else(|| head.clone());
@@ -315,7 +324,7 @@ fn cmd_commit(message: &str) -> Result<()> {
     let repo = Repo::find()?;
     let staged = repo
         .read_index()?
-        .ok_or_else(|| anyhow!("nothing staged — run `stowe add -A` first"))?;
+        .ok_or_else(|| anyhow!("nothing staged - run `stowe add -A` first"))?;
     let head = repo.head_manifest()?;
     let d = scan::diff(&head, &staged);
     if d.is_empty() {
@@ -360,7 +369,7 @@ fn cmd_remote(cmd: Option<RemoteCmd>) -> Result<()> {
             match &format {
                 Some(fmt) => {
                     if fmt == "mirror" && mirror::local_root(&url).is_none() {
-                        bail!("`mirror` format needs a local path — {url} can't be a mirror");
+                        bail!("`mirror` format needs a local path - {url} can't be a mirror");
                     }
                     cfg.formats.insert(name.clone(), fmt.clone());
                 }
@@ -403,7 +412,7 @@ fn cmd_push(names: &[String], force: bool) -> Result<()> {
     let repo = Repo::find()?;
     let head = repo
         .head()?
-        .ok_or_else(|| anyhow!("nothing committed yet — `stowe commit` first"))?;
+        .ok_or_else(|| anyhow!("nothing committed yet - `stowe commit` first"))?;
 
     // Resolve all targets up front so a bad name fails before any work. Each
     // remote is dispatched by its configured format (mirror vs object store).
@@ -462,7 +471,7 @@ fn push_objects(repo: &Repo, name: &str, url: &str, head: &str) -> Result<()> {
             Some(rel) => to_upload.push((remote::object_key(&e.hash), repo.root.join(rel))),
             None => bail!(
                 "content for `{}` is no longer in the working tree (modified or deleted \
-                 since the commit) — restore it or commit the change before pushing",
+                 since the commit) - restore it or commit the change before pushing",
                 e.path
             ),
         }
@@ -509,7 +518,7 @@ fn cmd_pull(name: &str) -> Result<()> {
 
     let backend = remote::open(&url)?;
     if !backend.exists("refs/main")? {
-        bail!("remote `{name}` is empty — nothing to pull");
+        bail!("remote `{name}` is empty - nothing to pull");
     }
     let remote_head = String::from_utf8(backend.get_bytes("refs/main")?)?
         .trim()
@@ -562,7 +571,7 @@ fn cmd_restore(
     let repo = Repo::find()?;
     let history = repo.history()?;
     if history.is_empty() {
-        bail!("nothing committed yet — nothing to restore");
+        bail!("nothing committed yet - nothing to restore");
     }
 
     // Resolve the target commit: HEAD by default, else the one commit whose
@@ -574,7 +583,7 @@ fn cmd_restore(
             match (it.next(), it.next()) {
                 (None, _) => bail!("no commit matches `{prefix}` (see `stowe log`)"),
                 (Some(one), None) => one.clone(),
-                (Some(_), Some(_)) => bail!("`{prefix}` is ambiguous — give more characters"),
+                (Some(_), Some(_)) => bail!("`{prefix}` is ambiguous - give more characters"),
             }
         }
     };
@@ -610,14 +619,14 @@ fn cmd_restore(
             };
             let rel = scan::rel_path(&root, &abs);
             let e = by_path.get(rel.as_str()).ok_or_else(|| {
-                anyhow!("`{rel}` isn't in commit {} — nothing to restore", short(&chash))
+                anyhow!("`{rel}` isn't in commit {} - nothing to restore", short(&chash))
             })?;
             out.push(*e);
         }
         out
     };
 
-    // Bytes come from the remote — a playable mirror (real files + preserved
+    // Bytes come from the remote - a playable mirror (real files + preserved
     // versions) or an object store. stowe keeps no local copies, so restoring
     // never doubles your disk.
     let url = remote_url(&repo, remote_name)?;
@@ -657,7 +666,7 @@ fn cmd_restore(
         };
         if !got {
             bail!(
-                "content for `{}` (commit {}) isn't on remote `{remote_name}` — was it pushed?",
+                "content for `{}` (commit {}) isn't on remote `{remote_name}` - was it pushed?",
                 e.path,
                 short(&chash)
             );
@@ -677,15 +686,15 @@ fn cmd_adapt(name: &str) -> Result<()> {
     let repo = Repo::find()?;
     let url = remote_url(&repo, name)?;
     let root = mirror::local_root(&url).ok_or_else(|| {
-        anyhow!("`stowe adapt` only works on mirror (local:) remotes — `{name}` is {url}")
+        anyhow!("`stowe adapt` only works on mirror (local:) remotes - `{name}` is {url}")
     })?;
     if mirror::detect_format(&root) != mirror::Format::Mirror {
-        bail!("remote `{name}` isn't a mirror — nothing to adapt from");
+        bail!("remote `{name}` isn't a mirror - nothing to adapt from");
     }
 
     let r = mirror::adapt(&repo, &root)?;
     if r.is_empty() {
-        println!("already in sync with `{name}` — nothing to adapt.");
+        println!("already in sync with `{name}` - nothing to adapt.");
         return Ok(());
     }
     println!(
@@ -700,12 +709,12 @@ fn cmd_convert(name: &str, to: Option<&str>) -> Result<()> {
     let repo = Repo::find()?;
     let url = remote_url(&repo, name)?;
     let root = mirror::local_root(&url).ok_or_else(|| {
-        anyhow!("only local remotes can be a playable mirror — `{name}` is {url}")
+        anyhow!("only local remotes can be a playable mirror - `{name}` is {url}")
     })?;
 
     let current = mirror::detect_format(&root);
     if current == mirror::Format::Empty {
-        bail!("remote `{name}` is empty — push to it first, then convert");
+        bail!("remote `{name}` is empty - push to it first, then convert");
     }
 
     // Default target = flip to the other format.
@@ -729,7 +738,7 @@ fn cmd_convert(name: &str, to: Option<&str>) -> Result<()> {
     };
 
     // Persist the new format so the next `push` keeps it (otherwise the
-    // scheme default — mirror for local — would flip it back).
+    // scheme default - mirror for local - would flip it back).
     let mut cfg = repo.config()?;
     cfg.formats.insert(name.to_string(), target.name().to_string());
     repo.save_config(&cfg)?;
@@ -743,6 +752,84 @@ fn cmd_convert(name: &str, to: Option<&str>) -> Result<()> {
     Ok(())
 }
 
+/// `stowe update` - reinstall the latest release with `cargo install stowe
+/// --force`. Prompts first unless `-y`.
+fn cmd_update(yes: bool) -> Result<()> {
+    use colored::Colorize;
+    use std::io::Write;
+
+    if !yes {
+        print!(
+            "{} {} ",
+            "Update stowe to the latest release via cargo?".bold(),
+            "[y/N]".dimmed()
+        );
+        std::io::stdout().flush().ok();
+        let mut input = String::new();
+        std::io::stdin().read_line(&mut input).ok();
+        if !matches!(input.trim().to_lowercase().as_str(), "y" | "yes") {
+            println!("{}", "Aborted.".dimmed());
+            return Ok(());
+        }
+    }
+
+    println!(
+        "{} {}\n",
+        "Updating stowe via".dimmed(),
+        "cargo install stowe --force".bold()
+    );
+
+    // On Windows a running .exe can't be overwritten; free its path first.
+    let token = begin_self_replace();
+    match std::process::Command::new("cargo")
+        .args(["install", "stowe", "--force"])
+        .status()
+    {
+        Ok(status) if status.success() => {
+            println!("\n{}", "✓ stowe is up to date.".green());
+            Ok(())
+        }
+        Ok(status) => {
+            undo_self_replace(&token);
+            bail!("update failed (cargo exited {})", status.code().unwrap_or(1));
+        }
+        Err(e) => {
+            undo_self_replace(&token);
+            bail!("could not run cargo: {e} - is it installed and on PATH? (https://rustup.rs)");
+        }
+    }
+}
+
+// On Windows, rename the running exe aside so cargo can replace its path;
+// restore it if the install fails. A no-op everywhere else.
+#[cfg(windows)]
+type ReplaceToken = Option<(std::path::PathBuf, std::path::PathBuf)>;
+#[cfg(not(windows))]
+type ReplaceToken = ();
+
+#[cfg(windows)]
+fn begin_self_replace() -> ReplaceToken {
+    let exe = std::env::current_exe().ok()?;
+    let mut old = exe.clone().into_os_string();
+    old.push(".old");
+    let old = std::path::PathBuf::from(old);
+    let _ = std::fs::remove_file(&old);
+    std::fs::rename(&exe, &old).ok().map(|_| (exe, old))
+}
+#[cfg(not(windows))]
+fn begin_self_replace() -> ReplaceToken {}
+
+#[cfg(windows)]
+fn undo_self_replace(token: &ReplaceToken) {
+    if let Some((exe, old)) = token {
+        if !exe.exists() {
+            let _ = std::fs::rename(old, exe);
+        }
+    }
+}
+#[cfg(not(windows))]
+fn undo_self_replace(_token: &ReplaceToken) {}
+
 // --- helpers ----------------------------------------------------------------
 
 fn remote_url(repo: &Repo, name: &str) -> Result<String> {
@@ -750,7 +837,7 @@ fn remote_url(repo: &Repo, name: &str) -> Result<String> {
         .remotes
         .get(name)
         .cloned()
-        .ok_or_else(|| anyhow!("no remote named `{name}` — add one: stowe remote add {name} <url>"))
+        .ok_or_else(|| anyhow!("no remote named `{name}` - add one: stowe remote add {name} <url>"))
 }
 
 fn now() -> i64 {

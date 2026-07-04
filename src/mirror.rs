@@ -1,7 +1,7 @@
 //! Playable-mirror remotes: a remote that *is* your files.
 //!
-//! A `local:` remote is laid out just like the working tree — real files at
-//! their real paths — so any media player (or a curious human) can read it
+//! A `local:` remote is laid out just like the working tree - real files at
+//! their real paths - so any media player (or a curious human) can read it
 //! directly. Stowe's bookkeeping lives in a hidden `.stowe/` at the remote
 //! root, mirroring the `.stowe/` in your working copy:
 //!
@@ -15,7 +15,7 @@
 //! ```
 //!
 //! Pushing syncs the tree to the latest commit: new files are copied in, moved
-//! files are *renamed in place* (cheap — no re-copy over USB), and files that
+//! files are *renamed in place* (cheap - no re-copy over USB), and files that
 //! were replaced or deleted have their old bytes tucked into `.stowe/objects/`
 //! so the mirror can still travel back in time on its own.
 
@@ -92,7 +92,7 @@ impl Drift {
 pub fn sync(repo: &Repo, root: &Path, force: bool) -> Result<SyncReport> {
     let head = repo
         .head()?
-        .ok_or_else(|| anyhow!("nothing committed yet — `stowe commit` first"))?;
+        .ok_or_else(|| anyhow!("nothing committed yet - `stowe commit` first"))?;
     let history = repo.history()?;
     let target: &Manifest = &history[0].1.files;
 
@@ -112,7 +112,7 @@ pub fn sync(repo: &Repo, root: &Path, force: bool) -> Result<SyncReport> {
     if !drift.is_empty() && !force {
         drift.report();
         bail!(
-            "mirror `{}` has changes made outside stowe — reconcile, or re-run with --force to \
+            "mirror `{}` has changes made outside stowe - reconcile, or re-run with --force to \
              overwrite it to match this commit",
             root.display()
         );
@@ -133,7 +133,7 @@ pub fn sync(repo: &Repo, root: &Path, force: bool) -> Result<SyncReport> {
     let remote_by_path: HashMap<&str, &Entry> =
         remote_manifest.iter().map(|e| (e.path.as_str(), e)).collect();
 
-    // 1. Moves — rename in place (the whole point: no re-copy).
+    // 1. Moves - rename in place (the whole point: no re-copy).
     for (from, to) in &d.moved {
         let src = root.join(from);
         let dst = root.join(to);
@@ -144,14 +144,14 @@ pub fn sync(repo: &Repo, root: &Path, force: bool) -> Result<SyncReport> {
             copy_in(repo, &by_hash, &target_by_path, to, &dst)?;
         }
     }
-    // 2. Removals — preserve the old bytes for rollback, then drop from the tree.
+    // 2. Removals - preserve the old bytes for rollback, then drop from the tree.
     for path in &d.removed {
         if let Some(e) = remote_by_path.get(path.as_str()) {
             preserve(root, &e.hash, &root.join(path))?;
         }
         remove_file_and_empty_dirs(root, &root.join(path))?;
     }
-    // 3. In-place changes — preserve the old version, write the new one.
+    // 3. In-place changes - preserve the old version, write the new one.
     for path in &d.modified {
         if let Some(e) = remote_by_path.get(path.as_str()) {
             preserve(root, &e.hash, &root.join(path))?;
@@ -198,7 +198,7 @@ fn copy_in(
     let src_rel = by_hash.get(entry.hash.as_str()).ok_or_else(|| {
         anyhow!(
             "content for `{path}` is no longer in the working tree (modified or deleted \
-             since the commit) — restore it or commit the change before pushing"
+             since the commit) - restore it or commit the change before pushing"
         )
     })?;
     ensure_parent(dst)?;
@@ -308,7 +308,7 @@ pub struct PullReport {
 /// versions in `.stowe/objects/` if a current file is somehow missing).
 pub fn pull(repo: &Repo, root: &Path) -> Result<PullReport> {
     let remote_head =
-        read_ref(root)?.ok_or_else(|| anyhow!("mirror `{}` is empty — nothing to pull", root.display()))?;
+        read_ref(root)?.ok_or_else(|| anyhow!("mirror `{}` is empty - nothing to pull", root.display()))?;
 
     // Copy down the commit chain metadata we don't already have.
     let mut new_commits = 0;
@@ -373,7 +373,7 @@ impl AdaptReport {
     }
 }
 
-/// Reconcile the local working tree to the mirror's *actual current files* —
+/// Reconcile the local working tree to the mirror's *actual current files* -
 /// including anything changed on the mirror outside stowe (a song copy-pasted
 /// onto the phone, one deleted by hand). The reverse of push: `remote ➜ local`.
 ///
@@ -497,7 +497,7 @@ pub enum Format {
     Mirror,
     /// Content-addressed blobs at the root (`objects/`, `commits/`, `refs/`).
     Backup,
-    /// Neither — nothing pushed here yet.
+    /// Neither - nothing pushed here yet.
     Empty,
 }
 
@@ -532,7 +532,7 @@ pub struct ConvertReport {
 
 /// Convert an object-store backup into a playable mirror, in place. Blobs are
 /// *renamed* into their real paths (a copy only when the same content is used
-/// by several paths — dedup), so there's no bulk re-copy.
+/// by several paths - dedup), so there's no bulk re-copy.
 pub fn backup_to_mirror(root: &Path) -> Result<ConvertReport> {
     let head = std::fs::read_to_string(root.join("refs").join("main"))
         .context("reading remote refs/main")?
@@ -551,7 +551,7 @@ pub fn backup_to_mirror(root: &Path) -> Result<ConvertReport> {
         let dest = root.join(&e.path);
         ensure_parent(&dest)?;
         if let Some(first) = placed.get(e.hash.as_str()) {
-            // Same content already laid down elsewhere — copy it (dedup fan-out).
+            // Same content already laid down elsewhere - copy it (dedup fan-out).
             std::fs::copy(root.join(first), &dest)?;
         } else {
             let blob = root.join("objects").join(&e.hash[..2]).join(&e.hash[2..]);
@@ -562,7 +562,7 @@ pub fn backup_to_mirror(root: &Path) -> Result<ConvertReport> {
         files += 1;
     }
 
-    // Whatever blobs remain are superseded versions — keep them for rollback.
+    // Whatever blobs remain are superseded versions - keep them for rollback.
     let preserved = move_object_tree(&root.join("objects"), &dot(root).join("objects"))?;
 
     // Relocate history + ref under `.stowe/`.
@@ -580,7 +580,7 @@ pub fn backup_to_mirror(root: &Path) -> Result<ConvertReport> {
 /// files are *renamed* into content-addressed blobs (dropped when a duplicate
 /// is already stored), then the empty tree is removed.
 pub fn mirror_to_backup(root: &Path) -> Result<ConvertReport> {
-    let head = read_ref(root)?.ok_or_else(|| anyhow!("mirror is empty — nothing to convert"))?;
+    let head = read_ref(root)?.ok_or_else(|| anyhow!("mirror is empty - nothing to convert"))?;
     let manifest = read_commit_files(root, &head)?;
     std::fs::create_dir_all(root.join("objects"))?;
 

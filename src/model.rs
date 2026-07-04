@@ -7,7 +7,7 @@
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
-/// `.stowe/config` — named remotes (`name -> url`) and, optionally, an explicit
+/// `.stowe/config` - named remotes (`name -> url`) and, optionally, an explicit
 /// on-disk format per remote (`name -> "mirror"|"backup"`). A remote with no
 /// entry in `formats` falls back to the scheme default (local → mirror, s3 →
 /// backup). `serde(default)` keeps configs written before `formats` existed
@@ -22,7 +22,7 @@ pub struct Config {
 
 /// One tracked file in a snapshot.
 ///
-/// `hash` is the blake3 of the file's full content — it *is* the object's name
+/// `hash` is the blake3 of the file's full content - it *is* the object's name
 /// in the store, so identical content is stored once (that's the dedup).
 /// `size` + `mtime` are only used to skip re-hashing files that look unchanged.
 ///

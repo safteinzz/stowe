@@ -3,18 +3,18 @@
 //!
 //! The point is identity that survives **renames and tag edits**. blake3 of the
 //! raw file changes the moment you touch an ID3/Vorbis tag; blake3 of the
-//! decoded samples does not — the audio is the same, so the fingerprint is the
+//! decoded samples does not - the audio is the same, so the fingerprint is the
 //! same. That's what lets `diff` recognise a re-tagged song as a move rather
 //! than an add+remove.
 //!
 //! It does *not* survive re-encoding (that changes the samples). To keep `add`
-//! fast on big libraries, we only decode the **first [`FP_SECONDS`] seconds** —
+//! fast on big libraries, we only decode the **first [`FP_SECONDS`] seconds** -
 //! decoding a whole song is ~99% of an import's cost, and the intro alone is
 //! more than enough to recognise the same audio after a rename/re-tag. A happy
 //! side effect: it's immune to *end*-trimming (silence chopped off the tail no
 //! longer changes the fingerprint). The trade-offs are that a song trimmed at
 //! the *start* reads as new, and two different songs with byte-identical intros
-//! of this length would collide — both negligible for real music.
+//! of this length would collide - both negligible for real music.
 
 use anyhow::Result;
 use std::path::Path;
@@ -45,7 +45,7 @@ pub fn is_audio(path: &Path) -> bool {
 /// blake3 of the decoded PCM samples of an audio file.
 ///
 /// Returns `Ok(None)` when the file isn't decodable audio (unknown codec,
-/// corrupt, etc.) — a fingerprint is a *best-effort bonus*, never required, so
+/// corrupt, etc.) - a fingerprint is a *best-effort bonus*, never required, so
 /// a failure here must not fail the scan.
 pub fn fingerprint(path: &Path) -> Result<Option<String>> {
     if !is_audio(path) {
@@ -101,13 +101,13 @@ fn decode_hash(path: &Path) -> Result<Option<String>> {
     let mut hashed_samples: u64 = 0;
     let mut interleaved: Vec<i16> = Vec::new();
     // Reused byte buffer: we feed blake3 one big slice per packet rather than
-    // one call per sample (a song is tens of millions of samples — per-sample
+    // one call per sample (a song is tens of millions of samples - per-sample
     // `update` calls dominated the runtime). Little-endian explicitly so the
     // fingerprint is identical across machines of either endianness.
     let mut bytes: Vec<u8> = Vec::new();
 
     // `next_packet` yields `Ok(None)` at clean end-of-stream and `Err` on a
-    // truncated/garbled tail — both end the loop, hashing whatever we read.
+    // truncated/garbled tail - both end the loop, hashing whatever we read.
     while let Ok(Some(packet)) = format.next_packet() {
         if packet.track_id != track_id {
             continue;
@@ -142,14 +142,14 @@ fn decode_hash(path: &Path) -> Result<Option<String>> {
         }
         hasher.update(&bytes);
 
-        // Enough of the intro captured — stop decoding the rest of the file.
+        // Enough of the intro captured - stop decoding the rest of the file.
         hashed_samples += n as u64;
         if hashed_samples >= target {
             break;
         }
     }
 
-    // Nothing decoded (e.g. a 0-byte file slipping past the extension check) —
+    // Nothing decoded (e.g. a 0-byte file slipping past the extension check) -
     // report "no fingerprint" rather than hashing nothing, which would alias
     // every empty file together.
     if !header_done {

@@ -15,7 +15,7 @@ use crate::repo::Repo;
 ///
 /// Big trees make `status`/`add` sit for a few seconds; without a sign of life
 /// that reads as a hang. So we stream a live count to *stderr*, and only when
-/// it's a terminal — piped/redirected output stays byte-for-byte clean, and the
+/// it's a terminal - piped/redirected output stays byte-for-byte clean, and the
 /// real result always goes to stdout. Ticking is throttled by the caller so the
 /// print cost never shows up in the timing.
 struct Progress {
@@ -151,7 +151,7 @@ struct Found {
 /// comes from an `fstatat` relative to the already-open directory fd. That
 /// matters enormously on deep trees over FUSE/network mounts: WalkDir's
 /// `metadata()` instead `stat`s the full absolute path, making the kernel
-/// re-resolve *every* directory component per file — e.g. ~5× slower on an
+/// re-resolve *every* directory component per file - e.g. ~5× slower on an
 /// NTFS-over-FUSE tree 10+ levels deep. Symlinks (and other non-regular
 /// entries) are skipped, matching the old non-following WalkDir behavior.
 fn collect_files(
@@ -198,7 +198,7 @@ fn collect_files(
 ///
 /// `fingerprint` controls whether *new/changed* audio files are decoded to
 /// produce their audio fingerprint. That decode is by far the most expensive
-/// thing stowe does, so `status` skips it (`false`) and just hashes — plain
+/// thing stowe does, so `status` skips it (`false`) and just hashes - plain
 /// renames are still caught by hash. `add` passes `true` to record fingerprints
 /// in the snapshot, which is what lets a later re-tag+rename read as a move.
 pub fn scan(repo: &Repo, cache_source: &Manifest, fingerprint: bool) -> Result<Manifest> {
@@ -207,14 +207,14 @@ pub fn scan(repo: &Repo, cache_source: &Manifest, fingerprint: bool) -> Result<M
 
     // Walk the tree, capturing each file's size+mtime via a dirfd-relative stat
     // (see `collect_files`). This is the dominant cost of a clean-tree `status`,
-    // and — because it goes through a single FUSE daemon on mounted drives —
+    // and - because it goes through a single FUSE daemon on mounted drives -
     // parallelising it only adds contention, so the walk stays sequential.
     let mut found: Vec<Found> = Vec::new();
     collect_files(&repo.root, &repo.root, &mut found, &prog)?;
 
     // Content hashing *is* worth parallelising (CPU-bound, per-file independent),
     // so fan it across cores. A cache hit (unchanged size+mtime) reuses the
-    // stored hash/fingerprint and reads no content — so a clean tree does no I/O
+    // stored hash/fingerprint and reads no content - so a clean tree does no I/O
     // here at all. `hashed` counts only the files we actually read, which is the
     // slow work worth reporting (a re-`add` of a big library, cold cache, etc.).
     let hashed = AtomicUsize::new(0);
@@ -275,11 +275,11 @@ impl Diff {
 /// Compare two manifests.
 ///
 /// A file at the *same* path with different content is `modified`. The
-/// interesting work is the rest — paths that vanished and paths that appeared
-/// — which we try to pair up as moves before declaring them removed/added:
+/// interesting work is the rest - paths that vanished and paths that appeared
+/// - which we try to pair up as moves before declaring them removed/added:
 ///
-///  1. **exact content** (same `hash`) — a plain rename, any file type;
-///  2. **same audio** (same `fp`) — a song that was renamed *and* re-tagged,
+///  1. **exact content** (same `hash`) - a plain rename, any file type;
+///  2. **same audio** (same `fp`) - a song that was renamed *and* re-tagged,
 ///     whose container bytes (and thus `hash`) changed but whose audio didn't.
 ///
 /// Pairing is greedy and one-to-one (each appeared path matches at most one
@@ -336,7 +336,7 @@ pub fn diff(old: &Manifest, new: &Manifest) -> Diff {
     };
 
     // Pass 1: exact-content moves (hash). Pass 2: same-audio moves (fp), only
-    // for what's left — so a perfect content match always wins over an fp one.
+    // for what's left - so a perfect content match always wins over an fp one.
     for (gi, g) in gone.iter().enumerate() {
         if let Some(fi) = by_hash.get_mut(g.hash.as_str()).and_then(|q| claim(q, &taken)) {
             taken[fi] = true;
@@ -391,7 +391,7 @@ pub fn print_status(staged: &Diff, unstaged: &Diff, summary: &Diff) {
     }
 
     // Colour is by *change type*, not by section: added/new is green, modified
-    // yellow, deleted red, renamed blue — consistent everywhere it appears.
+    // yellow, deleted red, renamed blue - consistent everywhere it appears.
     let added = |s: String| s.green();
     let modified = |s: String| s.yellow();
     let deleted = |s: String| s.red();

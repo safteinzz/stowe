@@ -1,13 +1,13 @@
 //! The remote: a thin **synchronous** wrapper around an OpenDAL `Operator`.
 //!
 //! Design choice: stowe's core is synchronous (it's a CPU/disk-bound batch
-//! tool, not a server). OpenDAL is async, so tokio is *quarantined here* — the
+//! tool, not a server). OpenDAL is async, so tokio is *quarantined here* - the
 //! rest of the program never sees a `.await`. Concurrency, where it actually
 //! pays off (uploading many objects), is done inside [`Remote::put_files`] via
 //! a bounded `buffer_unordered` over the runtime.
 //!
 //! OpenDAL itself is the pluggable-backend layer: `local:` builds an `Fs`
-//! operator, `s3:`/`b2:` an `S3` operator — same `Operator`, same four ops.
+//! operator, `s3:`/`b2:` an `S3` operator - same `Operator`, same four ops.
 
 use anyhow::{Context, Result, bail};
 use futures::stream::{self, StreamExt};
@@ -37,8 +37,8 @@ pub struct Remote {
 /// Build a [`Remote`] from a remote URL.
 ///
 /// Supported schemes:
-/// - `local:<path>` (or a bare path) — a folder / mounted drive / NAS
-/// - `s3://<bucket>[/<root>]` — any S3-compatible store (AWS, Backblaze B2, …);
+/// - `local:<path>` (or a bare path) - a folder / mounted drive / NAS
+/// - `s3://<bucket>[/<root>]` - any S3-compatible store (AWS, Backblaze B2, …);
 ///   credentials come from the standard `AWS_*` environment variables, and an
 ///   `AWS_ENDPOINT_URL` lets you point at B2/MinIO/etc.
 pub fn open(url: &str) -> Result<Remote> {
@@ -80,7 +80,7 @@ fn build_operator(url: &str) -> Result<Operator> {
         .with_context(|| format!("creating remote dir {local_path}"))?;
     // Write to a temp file and rename into place on close, so a killed push
     // (Ctrl+C, crash, unplugged drive) never leaves a corrupt file sitting
-    // under its final content-hash key — which future pushes would then
+    // under its final content-hash key - which future pushes would then
     // mistake for a complete, valid object and skip forever.
     let tmp_dir = Path::new(local_path).join(".stowe-tmp");
     std::fs::create_dir_all(&tmp_dir)?;
@@ -121,11 +121,11 @@ impl Remote {
 
     /// Upload many `(key, source-file)` pairs, skipping keys already present.
     /// Runs up to [`UPLOAD_CONCURRENCY`] uploads at once. Returns how many were
-    /// actually uploaded (i.e. weren't already there — that's the dedup skip).
+    /// actually uploaded (i.e. weren't already there - that's the dedup skip).
     pub fn put_files(&self, items: Vec<(String, PathBuf)>) -> Result<usize> {
         let total = items.len();
         let done = Arc::new(AtomicUsize::new(0));
-        // Live progress on stderr, terminal-only — so `stowe push` never looks
+        // Live progress on stderr, terminal-only - so `stowe push` never looks
         // hung on a big upload, while piped/redirected output stays clean.
         let show = std::io::stderr().is_terminal();
         self.rt.block_on(async {
