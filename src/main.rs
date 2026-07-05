@@ -378,6 +378,19 @@ fn cmd_remote(cmd: Option<RemoteCmd>) -> Result<()> {
                     cfg.formats.remove(&name);
                 }
             }
+            // If it's a local drive that isn't plugged in, confirm before saving
+            // (you may be adding it ahead of connecting, so default is yes).
+            if !remote_reachable(&url) {
+                let shown = mirror::local_root(&url)
+                    .map(|r| r.display().to_string())
+                    .unwrap_or_else(|| url.clone());
+                if !confirm_default_yes(&format!(
+                    "remote `{name}` ({shown}) isn't reachable right now. Add it anyway?"
+                )) {
+                    println!("aborted - remote not added.");
+                    return Ok(());
+                }
+            }
             cfg.remotes.insert(name.clone(), url.clone());
             repo.save_config(&cfg)?;
             println!("remote `{name}` -> {url} ({} format)", remote_format(&cfg, &name, &url).name());
@@ -425,6 +438,10 @@ fn cmd_push(names: &[String], force: bool) -> Result<()> {
     let mut resolved = Vec::new();
     for name in &targets {
         resolved.push((name.clone(), remote_url(&repo, name)?));
+    }
+    // Bail before any upload if a target drive isn't connected.
+    for (name, url) in &resolved {
+        ensure_reachable(name, url)?;
     }
 
     for (name, url) in &resolved {
@@ -501,6 +518,7 @@ fn push_objects(repo: &Repo, name: &str, url: &str, head: &str) -> Result<()> {
 fn cmd_pull(name: &str) -> Result<()> {
     let repo = Repo::find()?;
     let url = remote_url(&repo, name)?;
+    ensure_reachable(name, &url)?;
 
     // A mirror remote is pulled by rebuilding from its real files.
     if remote_format(&repo.config()?, name, &url) == mirror::Format::Mirror {
@@ -630,6 +648,7 @@ fn cmd_restore(
     // versions) or an object store. stowe keeps no local copies, so restoring
     // never doubles your disk.
     let url = remote_url(&repo, remote_name)?;
+    ensure_reachable(remote_name, &url)?;
     let mirror_root = match remote_format(&repo.config()?, remote_name, &url) {
         mirror::Format::Mirror => Some(
             mirror::local_root(&url)
@@ -685,6 +704,7 @@ fn cmd_restore(
 fn cmd_adapt(name: &str) -> Result<()> {
     let repo = Repo::find()?;
     let url = remote_url(&repo, name)?;
+    ensure_reachable(name, &url)?;
     let root = mirror::local_root(&url).ok_or_else(|| {
         anyhow!("`stowe adapt` only works on mirror (local:) remotes - `{name}` is {url}")
     })?;
@@ -708,6 +728,7 @@ fn cmd_adapt(name: &str) -> Result<()> {
 fn cmd_convert(name: &str, to: Option<&str>) -> Result<()> {
     let repo = Repo::find()?;
     let url = remote_url(&repo, name)?;
+    ensure_reachable(name, &url)?;
     let root = mirror::local_root(&url).ok_or_else(|| {
         anyhow!("only local remotes can be a playable mirror - `{name}` is {url}")
     })?;
@@ -838,6 +859,39 @@ fn remote_url(repo: &Repo, name: &str) -> Result<String> {
         .get(name)
         .cloned()
         .ok_or_else(|| anyhow!("no remote named `{name}` - add one: stowe remote add {name} <url>"))
+}
+
+/// Whether a remote's location is usable right now. A local path is reachable
+/// if it exists, or its parent does (so a first push can still create it).
+/// Non-local remotes (s3) are assumed reachable; their backend handles it.
+fn remote_reachable(url: &str) -> bool {
+    match mirror::local_root(url) {
+        Some(root) => root.exists() || root.parent().map(Path::exists).unwrap_or(false),
+        None => true,
+    }
+}
+
+/// Fail early with a clear message if a local remote's drive isn't connected,
+/// instead of a raw permission error deep in a push.
+fn ensure_reachable(name: &str, url: &str) -> Result<()> {
+    if !remote_reachable(url) {
+        let shown = mirror::local_root(url).map(|r| r.display().to_string()).unwrap_or_else(|| url.into());
+        bail!("remote `{name}` ({shown}) isn't reachable. Is the drive connected?");
+    }
+    Ok(())
+}
+
+/// Ask a yes/no question that defaults to **yes** (bare Enter = yes). Yes on a
+/// non-interactive stdin, so scripts aren't blocked.
+fn confirm_default_yes(prompt: &str) -> bool {
+    use std::io::Write;
+    print!("{prompt} [Y/n] ");
+    std::io::stdout().flush().ok();
+    let mut input = String::new();
+    if std::io::stdin().read_line(&mut input).is_err() {
+        return true;
+    }
+    !matches!(input.trim().to_lowercase().as_str(), "n" | "no")
 }
 
 fn now() -> i64 {
