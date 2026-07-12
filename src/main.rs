@@ -7,6 +7,7 @@
 mod audio;
 mod mirror;
 mod model;
+mod names;
 mod remote;
 mod repo;
 mod scan;
@@ -214,6 +215,7 @@ fn cmd_add(paths: Vec<PathBuf>, all: bool) -> Result<()> {
         repo.write_index(&current)?;
         println!("staged snapshot of {} files.", current.len());
         scan::print_diff(&d);
+        warn_unportable(&d);
         return Ok(());
     }
 
@@ -298,8 +300,36 @@ fn cmd_add(paths: Vec<PathBuf>, all: bool) -> Result<()> {
         summary += &format!(", {removed} removal(s)");
     }
     println!("{summary}");
-    scan::print_diff(&scan::diff(&head, &manifest));
+    let d = scan::diff(&head, &manifest);
+    scan::print_diff(&d);
+    warn_unportable(&d);
     Ok(())
+}
+
+/// Warn (non-blocking) when freshly staged names may not be storable on an
+/// external drive, so the surprise comes at `add` time, not mid-push weeks
+/// later. The strict character set is used: local ext4 may accept these, but
+/// a FAT/exFAT/NTFS mirror will not.
+fn warn_unportable(d: &scan::Diff) {
+    use colored::Colorize;
+    let mut bad: Vec<&String> = d
+        .added
+        .iter()
+        .filter(|p| names::unportable(p, true))
+        .collect();
+    bad.extend(d.moved.iter().map(|(_, to)| to).filter(|p| names::unportable(p, true)));
+    if bad.is_empty() {
+        return;
+    }
+    eprintln!(
+        "\n{} {} name(s) may not be storable on external drives (FAT/exFAT/NTFS):",
+        "warning:".yellow().bold(),
+        bad.len()
+    );
+    for p in bad {
+        eprintln!("  {}", names::display(p).yellow());
+    }
+    eprintln!("{}", "(a push to such a drive will offer to rename them)".dimmed());
 }
 
 /// True if `path` is `prefix` itself or sits beneath it (or `prefix` is the
@@ -423,9 +453,9 @@ fn remote_format(cfg: &model::Config, name: &str, url: &str) -> mirror::Format {
 
 fn cmd_push(names: &[String], force: bool) -> Result<()> {
     let repo = Repo::find()?;
-    let head = repo
-        .head()?
-        .ok_or_else(|| anyhow!("nothing committed yet - `stowe commit` first"))?;
+    if repo.head()?.is_none() {
+        bail!("nothing committed yet - `stowe commit` first");
+    }
 
     // Resolve all targets up front so a bad name fails before any work. Each
     // remote is dispatched by its configured format (mirror vs object store).
@@ -450,22 +480,147 @@ fn cmd_push(names: &[String], force: bool) -> Result<()> {
                 let root = mirror::local_root(url).ok_or_else(|| {
                     anyhow!("remote `{name}` is set to mirror but {url} isn't a local path")
                 })?;
+                // A mirror writes real file names; make sure the target drive
+                // can store every committed name (and offer the fix if not).
+                // This may create a rename commit, so HEAD is re-read after.
+                preflight_names(&repo, name, &root)?;
                 let r = mirror::sync(&repo, &root, force)?;
+                let head = repo.head()?.unwrap_or_default();
                 println!(
                     "mirrored to `{name}`: +{} new, ~{} changed, ⇄{} moved, -{} removed, \
                      {} new commits -> {}",
                     r.added, r.modified, r.moved, r.removed, r.new_commits, short(&head)
                 );
             }
-            _ => push_objects(&repo, name, url, &head)?,
+            _ => push_objects(&repo, name, url)?,
         }
     }
     Ok(())
 }
 
+/// Before mirroring, verify every committed name can exist on the target
+/// drive. If not: list the offenders readably and offer (default yes) to
+/// rename them locally to safe names, recorded as a rename commit, so the
+/// push proceeds instead of dying on a raw `Invalid argument` mid-copy.
+fn preflight_names(repo: &Repo, name: &str, root: &Path) -> Result<()> {
+    use colored::Colorize;
+
+    let strict = names::probe_restrictive(root);
+    let manifest = repo.head_manifest()?;
+    let offenders: Vec<String> = manifest
+        .iter()
+        .map(|e| e.path.clone())
+        .filter(|p| names::unportable(p, strict))
+        .collect();
+    if offenders.is_empty() {
+        return Ok(());
+    }
+
+    eprintln!(
+        "{} {} committed name(s) can't be stored on `{name}`:",
+        "note:".yellow().bold(),
+        offenders.len()
+    );
+    for p in &offenders {
+        eprintln!("  {}", names::display(p).yellow());
+    }
+    if !confirm_default_yes("Rename them locally to safe names and continue?") {
+        bail!("push aborted - fix the names and push again");
+    }
+
+    // Collision-free targets: sanitize, then bump with " (n)" if taken.
+    let mut used: HashSet<String> = manifest.iter().map(|e| e.path.clone()).collect();
+    let mut map: BTreeMap<String, String> = BTreeMap::new();
+    for old in &offenders {
+        let base = names::sanitize(old, strict);
+        let mut target = base.clone();
+        let mut n = 1;
+        while used.contains(&target) {
+            target = bump_name(&base, n);
+            n += 1;
+        }
+        used.insert(target.clone());
+        map.insert(old.clone(), target);
+    }
+
+    // Rename on disk (pruning any directory the rename empties).
+    for (old, new) in &map {
+        let src = repo.root.join(old);
+        if !src.exists() {
+            bail!(
+                "`{}` is no longer in the working tree - commit your changes, then push again",
+                names::display(old)
+            );
+        }
+        let dst = repo.root.join(new);
+        if let Some(p) = dst.parent() {
+            std::fs::create_dir_all(p)?;
+        }
+        std::fs::rename(&src, &dst)?;
+        let mut dir = src.parent();
+        while let Some(d) = dir {
+            if d == repo.root || std::fs::remove_dir(d).is_err() {
+                break;
+            }
+            dir = d.parent();
+        }
+        println!("renamed {} -> {new}", names::display(old));
+    }
+
+    // Record the renames as a commit. Content is untouched (same hashes), so
+    // history reads them as moves. A rename keeps size+mtime, so the next scan
+    // still cache-hits on these entries.
+    let mut files = manifest;
+    for e in &mut files {
+        if let Some(new) = map.get(&e.path) {
+            e.path = new.clone();
+        }
+    }
+    files.sort_by(|a, b| a.path.cmp(&b.path));
+    let commit = Commit {
+        parent: repo.head()?,
+        message: "fix: portable file names".to_string(),
+        time: now(),
+        files,
+    };
+    let hash = repo.write_commit(&commit)?;
+    repo.set_head(&hash)?;
+    println!("committed {} \"fix: portable file names\"", short(&hash));
+
+    // If a snapshot is staged, carry the renames into it too, so committing it
+    // later doesn't resurrect the old paths as delete+add.
+    if let Some(mut idx) = repo.read_index()? {
+        for e in &mut idx {
+            if let Some(new) = map.get(&e.path) {
+                e.path = new.clone();
+            }
+        }
+        idx.sort_by(|a, b| a.path.cmp(&b.path));
+        repo.write_index(&idx)?;
+    }
+    Ok(())
+}
+
+/// `dir/name.mp3` -> `dir/name (n).mp3` (extension kept; no extension, append).
+fn bump_name(path: &str, n: usize) -> String {
+    let (dir, file) = match path.rsplit_once('/') {
+        Some((d, f)) => (Some(d), f),
+        None => (None, path),
+    };
+    let bumped = match file.rsplit_once('.') {
+        Some((stem, ext)) if !stem.is_empty() => format!("{stem} ({n}).{ext}"),
+        _ => format!("{file} ({n})"),
+    };
+    match dir {
+        Some(d) => format!("{d}/{bumped}"),
+        None => bumped,
+    }
+}
+
 /// Push to an object-store (non-local) remote: content-addressed blobs + history.
-fn push_objects(repo: &Repo, name: &str, url: &str, head: &str) -> Result<()> {
+fn push_objects(repo: &Repo, name: &str, url: &str) -> Result<()> {
     let history = repo.history()?;
+    let head = history[0].0.clone();
     let head_commit = &history[0].1;
 
     // stowe keeps no local object store, so an object's bytes are read from the
@@ -510,7 +665,7 @@ fn push_objects(repo: &Repo, name: &str, url: &str, head: &str) -> Result<()> {
 
     println!(
         "pushed to `{name}`: {new_objects} new objects, {new_commits} new commits, refs/main -> {}",
-        short(head)
+        short(&head)
     );
     Ok(())
 }

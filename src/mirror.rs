@@ -203,7 +203,7 @@ fn copy_in(
     })?;
     ensure_parent(dst)?;
     std::fs::copy(repo.root.join(src_rel), dst)
-        .with_context(|| format!("copying {path} to mirror"))?;
+        .with_context(|| format!("copying {} to mirror", crate::names::display(path)))?;
     Ok(())
 }
 
