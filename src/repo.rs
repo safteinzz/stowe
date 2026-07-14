@@ -143,4 +143,36 @@ impl Repo {
         }
         Ok(())
     }
+
+    // --- remote tracking --------------------------------------------------
+
+    /// Where we remember the last commit pushed to a remote (git's
+    /// `refs/remotes/<name>/main`, roughly).
+    fn remote_ref(&self, name: &str) -> PathBuf {
+        self.dir.join("remotes").join(name)
+    }
+
+    /// The last commit we pushed to `name`, if we ever have.
+    ///
+    /// Its *presence* is load-bearing beyond bookkeeping: it's how push knows
+    /// it has written to this remote before, and so may not silently recreate
+    /// the remote's folder when the drive isn't mounted.
+    pub fn remote_head(&self, name: &str) -> Result<Option<String>> {
+        match std::fs::read_to_string(self.remote_ref(name)) {
+            Ok(s) => {
+                let s = s.trim().to_string();
+                Ok(if s.is_empty() { None } else { Some(s) })
+            }
+            Err(_) => Ok(None),
+        }
+    }
+
+    pub fn set_remote_head(&self, name: &str, hash: &str) -> Result<()> {
+        let p = self.remote_ref(name);
+        if let Some(dir) = p.parent() {
+            std::fs::create_dir_all(dir)?;
+        }
+        std::fs::write(p, hash.as_bytes())?;
+        Ok(())
+    }
 }

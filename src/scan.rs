@@ -18,25 +18,25 @@ use crate::repo::Repo;
 /// it's a terminal - piped/redirected output stays byte-for-byte clean, and the
 /// real result always goes to stdout. Ticking is throttled by the caller so the
 /// print cost never shows up in the timing.
-struct Progress {
+pub struct Progress {
     show: bool,
 }
 
 impl Progress {
-    fn new() -> Self {
+    pub fn new() -> Self {
         Progress {
             show: std::io::stderr().is_terminal(),
         }
     }
     /// Overwrite the current line with `msg` (only if attached to a terminal).
-    fn tick(&self, msg: &str) {
+    pub fn tick(&self, msg: &str) {
         if self.show {
             eprint!("\r\x1b[K{msg}");
             let _ = std::io::stderr().flush();
         }
     }
     /// Wipe the progress line so it doesn't linger above the real output.
-    fn clear(&self) {
+    pub fn clear(&self) {
         if self.show {
             eprint!("\r\x1b[K");
             let _ = std::io::stderr().flush();
@@ -183,7 +183,7 @@ fn collect_files(
                 mtime,
             });
             // Cheap to print, but throttle so it's ~invisible in the timing.
-            if out.len() % 1000 == 0 {
+            if out.len().is_multiple_of(1000) {
                 prog.tick(&format!("scanning... {} files", out.len()));
             }
         }
@@ -231,7 +231,7 @@ pub fn scan(repo: &Repo, cache_source: &Manifest, fingerprint: bool) -> Result<M
                         None
                     };
                     let n = hashed.fetch_add(1, Ordering::Relaxed) + 1;
-                    if n % 256 == 0 {
+                    if n.is_multiple_of(256) {
                         let what = if fingerprint { "hashing + fingerprinting" } else { "hashing" };
                         prog.tick(&format!("{what}... {n} files"));
                     }
@@ -508,4 +508,90 @@ pub fn print_diff(d: &Diff) -> bool {
         format!("⇄{}", d.moved.len()).blue(),
     );
     true
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::model::Entry;
+
+    fn e(path: &str, hash: &str) -> Entry {
+        Entry {
+            path: path.into(),
+            size: hash.len() as u64,
+            mtime: 0,
+            hash: hash.into(),
+            fp: None,
+        }
+    }
+
+    /// Same as `e`, but carrying an audio fingerprint: the content bytes differ
+    /// (a re-tag rewrites the container) while the decoded audio does not.
+    fn audio(path: &str, hash: &str, fp: &str) -> Entry {
+        Entry {
+            fp: Some(fp.into()),
+            ..e(path, hash)
+        }
+    }
+
+    #[test]
+    fn added_removed_and_modified_are_classified() {
+        let old = vec![e("keep.mp3", "h1"), e("gone.mp3", "h2"), e("edit.mp3", "h3")];
+        let new = vec![e("keep.mp3", "h1"), e("edit.mp3", "CHANGED"), e("new.mp3", "h4")];
+        let d = diff(&old, &new);
+        assert_eq!(d.added, ["new.mp3"]);
+        assert_eq!(d.removed, ["gone.mp3"]);
+        assert_eq!(d.modified, ["edit.mp3"]);
+        assert!(d.moved.is_empty());
+    }
+
+    #[test]
+    fn a_rename_is_a_move_not_a_delete_plus_add() {
+        let old = vec![e("old.mp3", "same")];
+        let new = vec![e("new.mp3", "same")];
+        let d = diff(&old, &new);
+        assert_eq!(d.moved, [("old.mp3".to_string(), "new.mp3".to_string())]);
+        assert!(d.added.is_empty() && d.removed.is_empty());
+    }
+
+    #[test]
+    fn a_retagged_and_renamed_song_is_still_a_move() {
+        // The reason the audio fingerprint exists: editing a tag changes the
+        // file's bytes, so the content hash can't recognise it. The decoded
+        // audio is identical, so the fingerprint can.
+        let old = vec![audio("old.mp3", "bytes-v1", "audio-fp")];
+        let new = vec![audio("Artist - Song.mp3", "bytes-v2", "audio-fp")];
+        let d = diff(&old, &new);
+        assert_eq!(d.moved.len(), 1, "should pair via fingerprint");
+        assert!(d.added.is_empty() && d.removed.is_empty());
+    }
+
+    #[test]
+    fn an_exact_content_match_wins_over_a_fingerprint_match() {
+        let old = vec![audio("a.mp3", "same-bytes", "fp")];
+        let new = vec![
+            audio("exact.mp3", "same-bytes", "fp"),
+            audio("retagged.mp3", "other-bytes", "fp"),
+        ];
+        let d = diff(&old, &new);
+        assert_eq!(d.moved, [("a.mp3".to_string(), "exact.mp3".to_string())]);
+        assert_eq!(d.added, ["retagged.mp3"]);
+    }
+
+    #[test]
+    fn duplicate_content_pairs_one_to_one() {
+        // Two identical files moved to two new paths: both are moves, and each
+        // old path claims exactly one new path (no collapsing to a single pair).
+        let old = vec![e("a1.mp3", "dup"), e("a2.mp3", "dup")];
+        let new = vec![e("b1.mp3", "dup"), e("b2.mp3", "dup")];
+        let d = diff(&old, &new);
+        assert_eq!(d.moved.len(), 2);
+        assert!(d.added.is_empty() && d.removed.is_empty());
+    }
+
+    #[test]
+    fn nothing_changed_means_an_empty_diff() {
+        let m = vec![e("a.mp3", "h1"), e("b.mp3", "h2")];
+        assert!(diff(&m, &m).is_empty());
+    }
 }

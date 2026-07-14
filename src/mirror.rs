@@ -20,12 +20,18 @@
 //! so the mirror can still travel back in time on its own.
 
 use anyhow::{Context, Result, anyhow, bail};
-use std::collections::HashMap;
+use rayon::prelude::*;
+use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::model::{Commit, Entry, Manifest};
 use crate::repo::Repo;
 use crate::scan;
+
+/// How many file copies to keep in flight when syncing a mirror. Enough to hide
+/// per-file latency on a network mirror, few enough not to thrash a USB drive.
+const COPY_CONCURRENCY: usize = 8;
 
 /// A `local:<path>` URL (or a bare path) → the mirror root. Returns `None` for
 /// non-local schemes (e.g. `s3://`), which use the object-store format instead.
@@ -106,9 +112,12 @@ pub fn sync(repo: &Repo, root: &Path, force: bool) -> Result<SyncReport> {
         None => Vec::new(),
     };
 
-    // Did someone touch the mirror behind stowe's back? Cheap check: paths +
-    // sizes vs the recorded snapshot (no hashing). Bail unless --force.
-    let drift = detect_drift(root, &remote_manifest)?;
+    // What's really on the mirror (one walk, reused below for repair).
+    let actual = mirror_sizes(root)?;
+
+    // Did someone touch the mirror behind stowe's back, in a way this push would
+    // clobber? Cheap check: paths + sizes, no hashing. Bail unless --force.
+    let drift = detect_drift(&actual, &remote_manifest, target);
     if !drift.is_empty() && !force {
         drift.report();
         bail!(
@@ -133,34 +142,79 @@ pub fn sync(repo: &Repo, root: &Path, force: bool) -> Result<SyncReport> {
     let remote_by_path: HashMap<&str, &Entry> =
         remote_manifest.iter().map(|e| (e.path.as_str(), e)).collect();
 
-    // 1. Moves - rename in place (the whole point: no re-copy).
-    for (from, to) in &d.moved {
+    let prog = scan::Progress::new();
+
+    // 1. Moves - rename in place (the whole point: no re-copy). Cheap metadata
+    //    ops, but each is a network round-trip on an sshfs mirror, so report.
+    let mut copies: Vec<(&String, PathBuf)> = Vec::new();
+    for (i, (from, to)) in d.moved.iter().enumerate() {
         let src = root.join(from);
         let dst = root.join(to);
         ensure_parent(&dst)?;
         if src.exists() {
             std::fs::rename(&src, &dst)?;
         } else {
-            copy_in(repo, &by_hash, &target_by_path, to, &dst)?;
+            copies.push((to, dst)); // content isn't there to move; copy it below
         }
+        prog.tick(&format!("moving... {}/{}", i + 1, d.moved.len()));
     }
     // 2. Removals - preserve the old bytes for rollback, then drop from the tree.
-    for path in &d.removed {
+    for (i, path) in d.removed.iter().enumerate() {
         if let Some(e) = remote_by_path.get(path.as_str()) {
             preserve(root, &e.hash, &root.join(path))?;
         }
         remove_file_and_empty_dirs(root, &root.join(path))?;
+        prog.tick(&format!("removing... {}/{}", i + 1, d.removed.len()));
     }
-    // 3. In-place changes - preserve the old version, write the new one.
+    // 3. In-place changes - preserve the old version before the new one lands.
     for path in &d.modified {
         if let Some(e) = remote_by_path.get(path.as_str()) {
             preserve(root, &e.hash, &root.join(path))?;
         }
-        copy_in(repo, &by_hash, &target_by_path, path, &root.join(path))?;
+        copies.push((path, root.join(path)));
     }
     // 4. New files.
     for path in &d.added {
-        copy_in(repo, &by_hash, &target_by_path, path, &root.join(path))?;
+        copies.push((path, root.join(path)));
+    }
+    // 5. Repair. The plan so far is a diff of two *manifests*, which is blind to
+    //    the mirror's real state: a file deleted or truncated on the drive still
+    //    "matches" between snapshots, so it would never be re-copied, leaving the
+    //    mirror claiming a file it no longer has (and breaking a later `pull`).
+    //    So bring back anything the target wants that isn't actually there.
+    let queued: HashSet<&str> = copies.iter().map(|(p, _)| p.as_str()).collect();
+    let repairs: Vec<&String> = target
+        .iter()
+        .filter(|e| actual.get(&e.path) != Some(&e.size) && !queued.contains(e.path.as_str()))
+        .map(|e| &e.path)
+        .collect();
+    for path in repairs {
+        copies.push((path, root.join(path)));
+    }
+
+    // Copying the bytes is the slow part, and on a network mirror (a phone over
+    // sshfs) it's latency-bound: each file waits on a round-trip. Run a bounded
+    // handful concurrently so the link stays busy. Bounded, not unbounded, since
+    // a USB/FUSE mirror gains nothing from a stampede.
+    if !copies.is_empty() {
+        let total = copies.len();
+        let done = AtomicUsize::new(0);
+        let pool = rayon::ThreadPoolBuilder::new()
+            .num_threads(COPY_CONCURRENCY)
+            .build()?;
+        pool.install(|| -> Result<()> {
+            copies
+                .par_iter()
+                .map(|(path, dst)| -> Result<()> {
+                    copy_in(repo, &by_hash, &target_by_path, path, dst)?;
+                    let n = done.fetch_add(1, Ordering::Relaxed) + 1;
+                    if n.is_multiple_of(8) || n == total {
+                        prog.tick(&format!("copying... {n}/{total}"));
+                    }
+                    Ok(())
+                })
+                .collect::<Result<()>>()
+        })?;
     }
 
     // History + ref, so the mirror is self-describing.
@@ -173,6 +227,7 @@ pub fn sync(repo: &Repo, root: &Path, force: bool) -> Result<SyncReport> {
         }
     }
     write_ref(root, &head)?;
+    prog.clear();
 
     Ok(SyncReport {
         added: d.added.len(),
@@ -249,13 +304,11 @@ fn remove_file_and_empty_dirs(root: &Path, file: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Walk the mirror's real tree (skipping `.stowe`) and flag anything that
-/// doesn't match its recorded snapshot.
-fn detect_drift(root: &Path, manifest: &Manifest) -> Result<Drift> {
-    let mut expected: HashMap<String, u64> =
-        manifest.iter().map(|e| (e.path.clone(), e.size)).collect();
-    let mut drift = Drift::default();
-
+/// What's *actually* on the mirror right now: repo-relative path -> size.
+/// Cheap (no hashing), and the single source of truth for both drift detection
+/// and repair, so we only walk the tree once.
+fn mirror_sizes(root: &Path) -> Result<HashMap<String, u64>> {
+    let mut out = HashMap::new();
     let mut stack = vec![root.to_path_buf()];
     while let Some(dir) = stack.pop() {
         let rd = match std::fs::read_dir(&dir) {
@@ -270,30 +323,60 @@ fn detect_drift(root: &Path, manifest: &Manifest) -> Result<Drift> {
             let ft = entry.file_type()?;
             if ft.is_dir() {
                 stack.push(entry.path());
-            } else if ft.is_file() {
-                let rel = entry
-                    .path()
-                    .strip_prefix(root)
-                    .unwrap_or(&entry.path())
-                    .to_string_lossy()
-                    .replace('\\', "/");
-                match expected.remove(&rel) {
-                    Some(size) => {
-                        if entry.metadata()?.len() != size {
-                            drift.changed.push(rel);
-                        }
-                    }
-                    None => drift.foreign.push(rel),
-                }
+                continue;
             }
+            if !ft.is_file() {
+                continue;
+            }
+            let abs = entry.path();
+            let rel = abs
+                .strip_prefix(root)
+                .unwrap_or(&abs)
+                .to_string_lossy()
+                .replace('\\', "/");
+            out.insert(rel, entry.metadata()?.len());
         }
     }
-    // Anything left in `expected` was recorded but is missing from the tree.
-    drift.missing = expected.into_keys().collect();
+    Ok(out)
+}
+
+/// Flag changes made to the mirror outside stowe.
+///
+/// Drift is measured against the mirror's *recorded* snapshot, but judged
+/// against the snapshot we're about to push (`target`). A difference the target
+/// already accounts for is not drift, it's reconciled: after `stowe adapt`
+/// pulls a hand-dropped song into the repo and you commit it, pushing it back
+/// must not trip over the very file we just adopted. We only block on changes
+/// the push would actually clobber or resurrect.
+fn detect_drift(actual: &HashMap<String, u64>, recorded: &Manifest, target: &Manifest) -> Drift {
+    let target_size: HashMap<&str, u64> =
+        target.iter().map(|e| (e.path.as_str(), e.size)).collect();
+    let recorded_size: HashMap<&str, u64> =
+        recorded.iter().map(|e| (e.path.as_str(), e.size)).collect();
+    let mut drift = Drift::default();
+
+    for (rel, size) in actual {
+        // Already what we're about to push? Then it isn't drift.
+        if target_size.get(rel.as_str()) == Some(size) {
+            continue;
+        }
+        match recorded_size.get(rel.as_str()) {
+            Some(rec) if rec != size => drift.changed.push(rel.clone()),
+            Some(_) => {}
+            None => drift.foreign.push(rel.clone()),
+        }
+    }
+    // Recorded but gone from the tree: only a problem if the push would put it
+    // back. If the target drops it too, the mirror simply got there first.
+    for e in recorded {
+        if !actual.contains_key(&e.path) && target_size.contains_key(e.path.as_str()) {
+            drift.missing.push(e.path.clone());
+        }
+    }
     drift.foreign.sort();
     drift.missing.sort();
     drift.changed.sort();
-    Ok(drift)
+    drift
 }
 
 /// What a pull brought down.
@@ -688,4 +771,81 @@ fn read_commit_files(root: &Path, hash: &str) -> Result<Manifest> {
     let bytes = std::fs::read(&p).with_context(|| format!("reading mirror commit {hash}"))?;
     let commit: crate::model::Commit = serde_json::from_slice(&bytes)?;
     Ok(commit.files)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn m(entries: &[(&str, &str, u64)]) -> Manifest {
+        entries
+            .iter()
+            .map(|(path, hash, size)| Entry {
+                path: (*path).into(),
+                size: *size,
+                mtime: 0,
+                hash: (*hash).into(),
+                fp: None,
+            })
+            .collect()
+    }
+
+    fn sizes(entries: &[(&str, u64)]) -> HashMap<String, u64> {
+        entries.iter().map(|(p, s)| ((*p).into(), *s)).collect()
+    }
+
+    #[test]
+    fn local_paths_are_mirrors_and_urls_are_not() {
+        assert_eq!(
+            local_root("local:/mnt/drive"),
+            Some(PathBuf::from("/mnt/drive"))
+        );
+        assert_eq!(local_root("/mnt/drive"), Some(PathBuf::from("/mnt/drive")));
+        assert_eq!(local_root("s3://bucket/music"), None);
+    }
+
+    #[test]
+    fn an_untouched_mirror_has_no_drift() {
+        let recorded = m(&[("a.mp3", "h1", 1)]);
+        let actual = sizes(&[("a.mp3", 1)]);
+        assert!(detect_drift(&actual, &recorded, &recorded).is_empty());
+    }
+
+    #[test]
+    fn a_file_dropped_on_the_mirror_by_hand_is_drift() {
+        let recorded = m(&[("a.mp3", "h1", 1)]);
+        let actual = sizes(&[("a.mp3", 1), ("byhand.mp3", 9)]);
+        let d = detect_drift(&actual, &recorded, &recorded);
+        assert_eq!(d.foreign, ["byhand.mp3"]);
+    }
+
+    #[test]
+    fn a_file_deleted_on_the_mirror_is_drift_when_we_would_put_it_back() {
+        let recorded = m(&[("a.mp3", "h1", 1)]);
+        let actual = sizes(&[]);
+        let d = detect_drift(&actual, &recorded, &recorded);
+        assert_eq!(d.missing, ["a.mp3"]);
+    }
+
+    #[test]
+    fn a_deletion_we_are_also_making_is_not_drift() {
+        // The mirror just got there first: our target drops it too.
+        let recorded = m(&[("a.mp3", "h1", 1)]);
+        let target = m(&[]);
+        let actual = sizes(&[]);
+        assert!(detect_drift(&actual, &recorded, &target).is_empty());
+    }
+
+    #[test]
+    fn a_file_we_already_adopted_is_not_drift() {
+        // Regression: `adapt` pulled a hand-dropped song into the repo, but the
+        // drift check still flagged it, so pushing it back was impossible.
+        let recorded = m(&[("a.mp3", "h1", 1)]);
+        let target = m(&[("a.mp3", "h1", 1), ("byhand.mp3", "h2", 9)]);
+        let actual = sizes(&[("a.mp3", 1), ("byhand.mp3", 9)]);
+        assert!(
+            detect_drift(&actual, &recorded, &target).is_empty(),
+            "the file we just adopted must not read as foreign"
+        );
+    }
 }

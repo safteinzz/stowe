@@ -76,3 +76,62 @@ pub fn probe_restrictive(root: &Path) -> bool {
         Err(_) => true,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn control_characters_are_never_portable() {
+        // The real one: a song whose name began with a newline. Illegal on
+        // exFAT even though ext4 stored it happily.
+        assert!(unportable("Music/\nt.A.T.u. - Remix", false));
+        assert!(unportable("a\tb.mp3", true));
+    }
+
+    #[test]
+    fn windows_illegal_characters_only_matter_in_strict_mode() {
+        assert!(unportable("Album: The Best.mp3", true));
+        assert!(!unportable("Album: The Best.mp3", false), "fine on ext4");
+        for bad in ['"', '*', ':', '<', '>', '?', '|', '\\'] {
+            assert!(unportable(&format!("x{bad}.mp3"), true), "{bad} should fail");
+        }
+    }
+
+    #[test]
+    fn trailing_dots_and_spaces_are_strict_only() {
+        assert!(unportable("song .mp3/x", true) || unportable("dir /x", true));
+        assert!(unportable("trailing.", true));
+        assert!(!unportable("trailing.", false));
+    }
+
+    #[test]
+    fn ordinary_names_are_left_alone() {
+        assert!(!unportable("Music/Artist/Song (Remix).mp3", true));
+        assert!(!unportable("Nas Ne Dogonyat.mp3", true));
+    }
+
+    #[test]
+    fn display_escapes_control_characters_onto_one_line() {
+        // Printing the raw name would split the error message in half.
+        assert_eq!(display("a\nb"), "a⏎b");
+        assert!(!display("a\nb").contains('\n'));
+    }
+
+    #[test]
+    fn sanitize_produces_a_storable_name() {
+        assert_eq!(sanitize("Music/\nsong.mp3", true), "Music/song.mp3");
+        assert_eq!(sanitize("Album: Best.mp3", true), "Album_ Best.mp3");
+        // Directory components are healed independently.
+        assert_eq!(sanitize("bad:dir/ok.mp3", true), "bad_dir/ok.mp3");
+        // And the result is, by definition, portable.
+        for raw in ["a\nb.mp3", "x:y?z.mp3", "trailing. "] {
+            assert!(!unportable(&sanitize(raw, true), true), "{raw}");
+        }
+    }
+
+    #[test]
+    fn sanitize_never_yields_an_empty_component() {
+        assert_eq!(sanitize("\n\n", true), "_");
+    }
+}

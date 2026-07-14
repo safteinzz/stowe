@@ -73,6 +73,7 @@ enum Cmd {
     /// Manage remotes - no subcommand lists them
     ///   add NAME URL            add or update a remote
     ///     --format mirror|backup   on-disk shape (default: local→mirror)
+    ///     --mount CMD              command that mounts it, run when unreachable
     #[command(verbatim_doc_comment)]
     Remote {
         /// Accepted for git muscle memory; stowe always shows URLs anyway.
@@ -152,6 +153,11 @@ enum RemoteCmd {
         /// Omit to use the scheme default (local → mirror, s3 → backup).
         #[arg(long, value_parser = ["mirror", "backup"])]
         format: Option<String>,
+        /// Shell command that makes this remote available (mount the drive,
+        /// bring up an sshfs). Run automatically when it isn't reachable. May be
+        /// an inline command or a path to a script. Local remotes only.
+        #[arg(long)]
+        mount: Option<String>,
     },
     /// List configured remotes.
     List,
@@ -394,7 +400,7 @@ fn cmd_log() -> Result<()> {
 fn cmd_remote(cmd: Option<RemoteCmd>) -> Result<()> {
     let repo = Repo::find()?;
     match cmd {
-        Some(RemoteCmd::Add { name, url, format }) => {
+        Some(RemoteCmd::Add { name, url, format, mount }) => {
             let mut cfg = repo.config()?;
             match &format {
                 Some(fmt) => {
@@ -408,9 +414,23 @@ fn cmd_remote(cmd: Option<RemoteCmd>) -> Result<()> {
                     cfg.formats.remove(&name);
                 }
             }
+            // A mount command only means something for a path we have to make
+            // exist. An s3 store is reachable on credentials, not on mounting.
+            match &mount {
+                Some(cmd) => {
+                    if mirror::local_root(&url).is_none() {
+                        bail!("--mount only applies to local remotes; {url} has nothing to mount");
+                    }
+                    cfg.mounts.insert(name.clone(), cmd.clone());
+                }
+                None => {
+                    cfg.mounts.remove(&name);
+                }
+            }
             // If it's a local drive that isn't plugged in, confirm before saving
             // (you may be adding it ahead of connecting, so default is yes).
-            if !remote_reachable(&url) {
+            // With a mount command we already know how to reach it, so no prompt.
+            if !remote_reachable(&url) && mount.is_none() {
                 let shown = mirror::local_root(&url)
                     .map(|r| r.display().to_string())
                     .unwrap_or_else(|| url.clone());
@@ -424,6 +444,9 @@ fn cmd_remote(cmd: Option<RemoteCmd>) -> Result<()> {
             cfg.remotes.insert(name.clone(), url.clone());
             repo.save_config(&cfg)?;
             println!("remote `{name}` -> {url} ({} format)", remote_format(&cfg, &name, &url).name());
+            if let Some(cmd) = &mount {
+                println!("  mount: {cmd}");
+            }
         }
         // Bare `stowe remote` and `stowe remote list` both just list.
         None | Some(RemoteCmd::List) => {
@@ -434,6 +457,9 @@ fn cmd_remote(cmd: Option<RemoteCmd>) -> Result<()> {
             }
             for (name, url) in &cfg.remotes {
                 println!("{name}\t{url}\t[{}]", remote_format(&cfg, name, url).name());
+                if let Some(cmd) = cfg.mounts.get(name) {
+                    println!("  mount: {cmd}");
+                }
             }
         }
     }
@@ -469,9 +495,10 @@ fn cmd_push(names: &[String], force: bool) -> Result<()> {
     for name in &targets {
         resolved.push((name.clone(), remote_url(&repo, name)?));
     }
-    // Bail before any upload if a target drive isn't connected.
+    // Bail before any upload if a target drive isn't connected (mounting it
+    // first, if the remote knows how).
     for (name, url) in &resolved {
-        ensure_reachable(name, url)?;
+        ensure_reachable(&repo, &cfg, name, url)?;
     }
 
     for (name, url) in &resolved {
@@ -486,6 +513,9 @@ fn cmd_push(names: &[String], force: bool) -> Result<()> {
                 preflight_names(&repo, name, &root)?;
                 let r = mirror::sync(&repo, &root, force)?;
                 let head = repo.head()?.unwrap_or_default();
+                // Remember we've written here: a later push must then find this
+                // remote's marker, or refuse rather than recreate its folder.
+                repo.set_remote_head(name, &head)?;
                 println!(
                     "mirrored to `{name}`: +{} new, ~{} changed, ⇄{} moved, -{} removed, \
                      {} new commits -> {}",
@@ -662,6 +692,7 @@ fn push_objects(repo: &Repo, name: &str, url: &str) -> Result<()> {
         }
     }
     backend.put_bytes("refs/main", head.as_bytes())?;
+    repo.set_remote_head(name, &head)?;
 
     println!(
         "pushed to `{name}`: {new_objects} new objects, {new_commits} new commits, refs/main -> {}",
@@ -673,7 +704,7 @@ fn push_objects(repo: &Repo, name: &str, url: &str) -> Result<()> {
 fn cmd_pull(name: &str) -> Result<()> {
     let repo = Repo::find()?;
     let url = remote_url(&repo, name)?;
-    ensure_reachable(name, &url)?;
+    ensure_reachable(&repo, &repo.config()?, name, &url)?;
 
     // A mirror remote is pulled by rebuilding from its real files.
     if remote_format(&repo.config()?, name, &url) == mirror::Format::Mirror {
@@ -803,7 +834,7 @@ fn cmd_restore(
     // versions) or an object store. stowe keeps no local copies, so restoring
     // never doubles your disk.
     let url = remote_url(&repo, remote_name)?;
-    ensure_reachable(remote_name, &url)?;
+    ensure_reachable(&repo, &repo.config()?, remote_name, &url)?;
     let mirror_root = match remote_format(&repo.config()?, remote_name, &url) {
         mirror::Format::Mirror => Some(
             mirror::local_root(&url)
@@ -859,7 +890,7 @@ fn cmd_restore(
 fn cmd_adapt(name: &str) -> Result<()> {
     let repo = Repo::find()?;
     let url = remote_url(&repo, name)?;
-    ensure_reachable(name, &url)?;
+    ensure_reachable(&repo, &repo.config()?, name, &url)?;
     let root = mirror::local_root(&url).ok_or_else(|| {
         anyhow!("`stowe adapt` only works on mirror (local:) remotes - `{name}` is {url}")
     })?;
@@ -883,7 +914,7 @@ fn cmd_adapt(name: &str) -> Result<()> {
 fn cmd_convert(name: &str, to: Option<&str>) -> Result<()> {
     let repo = Repo::find()?;
     let url = remote_url(&repo, name)?;
-    ensure_reachable(name, &url)?;
+    ensure_reachable(&repo, &repo.config()?, name, &url)?;
     let root = mirror::local_root(&url).ok_or_else(|| {
         anyhow!("only local remotes can be a playable mirror - `{name}` is {url}")
     })?;
@@ -955,8 +986,6 @@ fn cmd_update(yes: bool) -> Result<()> {
         "cargo install stowe --force".bold()
     );
 
-    // On Windows a running .exe can't be overwritten; free its path first.
-    let token = begin_self_replace();
     match std::process::Command::new("cargo")
         .args(["install", "stowe", "--force"])
         .status()
@@ -965,46 +994,12 @@ fn cmd_update(yes: bool) -> Result<()> {
             println!("\n{}", "✓ stowe is up to date.".green());
             Ok(())
         }
-        Ok(status) => {
-            undo_self_replace(&token);
-            bail!("update failed (cargo exited {})", status.code().unwrap_or(1));
-        }
+        Ok(status) => bail!("update failed (cargo exited {})", status.code().unwrap_or(1)),
         Err(e) => {
-            undo_self_replace(&token);
-            bail!("could not run cargo: {e} - is it installed and on PATH? (https://rustup.rs)");
+            bail!("could not run cargo: {e} - is it installed and on PATH? (https://rustup.rs)")
         }
     }
 }
-
-// On Windows, rename the running exe aside so cargo can replace its path;
-// restore it if the install fails. A no-op everywhere else.
-#[cfg(windows)]
-type ReplaceToken = Option<(std::path::PathBuf, std::path::PathBuf)>;
-#[cfg(not(windows))]
-type ReplaceToken = ();
-
-#[cfg(windows)]
-fn begin_self_replace() -> ReplaceToken {
-    let exe = std::env::current_exe().ok()?;
-    let mut old = exe.clone().into_os_string();
-    old.push(".old");
-    let old = std::path::PathBuf::from(old);
-    let _ = std::fs::remove_file(&old);
-    std::fs::rename(&exe, &old).ok().map(|_| (exe, old))
-}
-#[cfg(not(windows))]
-fn begin_self_replace() -> ReplaceToken {}
-
-#[cfg(windows)]
-fn undo_self_replace(token: &ReplaceToken) {
-    if let Some((exe, old)) = token {
-        if !exe.exists() {
-            let _ = std::fs::rename(old, exe);
-        }
-    }
-}
-#[cfg(not(windows))]
-fn undo_self_replace(_token: &ReplaceToken) {}
 
 // --- helpers ----------------------------------------------------------------
 
@@ -1026,14 +1021,117 @@ fn remote_reachable(url: &str) -> bool {
     }
 }
 
-/// Fail early with a clear message if a local remote's drive isn't connected,
-/// instead of a raw permission error deep in a push.
-fn ensure_reachable(name: &str, url: &str) -> Result<()> {
+/// Make sure a remote is really there before we write a byte to it.
+///
+/// The hard lesson behind this: *"a folder exists"* is not proof a remote is
+/// mounted. Unmounting never removes the mountpoint, so a leftover empty
+/// directory will happily accept an entire library onto the local disk. So:
+///
+/// 1. If the remote has a `mount` command, that command is the authority (it
+///    can ask the kernel; a stale folder can't fool it). Always run it, every
+///    time. It's expected to be a no-op when already mounted.
+/// 2. Belt and braces: a genuinely mounted remote lives on its own filesystem.
+///    If it's still on the local disk after mounting "succeeded", refuse.
+/// 3. With no mount command: if we've pushed here before, the remote must still
+///    carry its marker. Gone means the drive is gone, and we must never
+///    recreate the folder.
+fn ensure_reachable(repo: &Repo, cfg: &model::Config, name: &str, url: &str) -> Result<()> {
+    // Non-local remotes (s3) have no path to mount; their backend handles it.
+    let Some(root) = mirror::local_root(url) else {
+        return Ok(());
+    };
+
+    // The remote knows how to make itself available: let it, before we judge.
+    if let Some(cmd) = cfg.mounts.get(name) {
+        run_mount(name, cmd)?;
+        // A mount command exists precisely because this remote lives on its own
+        // device. If we'd still be writing to the local disk, the mount didn't
+        // take, whatever the script claimed.
+        if on_local_disk(&root) {
+            bail!(
+                "`{name}`: the mount command succeeded, but {} is still on your local disk. \
+                 Refusing to write there - the drive would be backed up to the wrong place.",
+                root.display()
+            );
+        }
+    }
+
+    // Written here before? Then the remote must still carry its marker. If it's
+    // gone, so is the drive, and we must never recreate the folder: that is
+    // exactly how an entire library ends up copied onto the local disk.
+    let known = repo.remote_head(name)?.is_some();
+    if known && mirror::detect_format(&root) == mirror::Format::Empty {
+        bail!(
+            "remote `{name}` ({}) has been pushed to before, but isn't there now. \
+             Is the drive connected? (refusing to recreate it)",
+            root.display()
+        );
+    }
+
     if !remote_reachable(url) {
-        let shown = mirror::local_root(url).map(|r| r.display().to_string()).unwrap_or_else(|| url.into());
-        bail!("remote `{name}` ({shown}) isn't reachable. Is the drive connected?");
+        bail!(
+            "remote `{name}` ({}) isn't reachable. Is the drive connected?",
+            root.display()
+        );
     }
     Ok(())
+}
+
+/// True when `path` sits on the same filesystem as `/`, i.e. nothing is really
+/// mounted there. Any genuine mount (drive, phone, sshfs) gets its own device
+/// id, so this catches "the script said OK but we'd be writing to local disk".
+/// Falls back to the nearest existing ancestor, since the remote's own folder
+/// may not exist yet on a first push.
+///
+/// Best-effort, and deliberately secondary to the marker check: it only sees the
+/// mistake when the remote path lives on the root filesystem, so a separate
+/// `/home` partition (or a path under `/tmp`) hides it. The marker check is what
+/// actually guarantees we never rewrite a remote that isn't there.
+#[cfg(unix)]
+fn on_local_disk(path: &Path) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    let device_of = |p: &Path| -> Option<u64> {
+        let mut cur = Some(p);
+        while let Some(c) = cur {
+            if let Ok(md) = std::fs::metadata(c) {
+                return Some(md.dev());
+            }
+            cur = c.parent();
+        }
+        None
+    };
+    match (device_of(path), device_of(Path::new("/"))) {
+        (Some(here), Some(root_fs)) => here == root_fs,
+        _ => false, // can't tell: don't block on a guess
+    }
+}
+
+#[cfg(not(unix))]
+fn on_local_disk(_path: &Path) -> bool {
+    false
+}
+
+/// Run a remote's mount command through the platform shell, so the configured
+/// value can be an inline command *or* a path to a script (a script path is
+/// just a command). Echoed before running: it's your shell, but you should see
+/// what stowe is about to execute.
+fn run_mount(name: &str, cmd: &str) -> Result<()> {
+    use colored::Colorize;
+    println!("{} {}", "mounting".dimmed(), format!("`{name}`: {cmd}").dimmed());
+
+    #[cfg(windows)]
+    let status = std::process::Command::new("cmd").args(["/C", cmd]).status();
+    #[cfg(not(windows))]
+    let status = std::process::Command::new("sh").arg("-c").arg(cmd).status();
+
+    match status {
+        Ok(s) if s.success() => Ok(()),
+        Ok(s) => bail!(
+            "mount command for `{name}` failed (exit {})",
+            s.code().unwrap_or(1)
+        ),
+        Err(e) => bail!("could not run the mount command for `{name}`: {e}"),
+    }
 }
 
 /// Ask a yes/no question that defaults to **yes** (bare Enter = yes). Yes on a

@@ -1,6 +1,6 @@
 [package]
 name = "stowe"
-version = "0.2.2"
+version = "0.3.0"
 edition = "2024"
 description = "git for big and binary files: versioned, deduped, pushed to backups you can still play (mirror) or compact blob stores (S3)."
 license = "AGPL-3.0-only"
@@ -25,3 +25,6 @@ opendal    = { version = "0.57", features = ["services-fs", "services-s3"] }
 tokio      = { version = "1", features = ["rt-multi-thread", "fs", "io-util"] }
 # pure-Rust audio decode → PCM, so we fingerprint songs without C deps or binaries
 symphonia  = { version = "0.6", features = ["mp3", "flac", "isomp4", "alac", "aac", "ogg", "vorbis", "wav"] }
+
+[dev-dependencies]
+tempfile = "3"                                             # throwaway dirs for the test suite

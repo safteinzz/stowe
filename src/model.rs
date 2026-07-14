@@ -12,12 +12,17 @@ use std::collections::BTreeMap;
 /// entry in `formats` falls back to the scheme default (local → mirror, s3 →
 /// backup). `serde(default)` keeps configs written before `formats` existed
 /// readable.
+/// `mounts` holds an optional shell command per remote that makes it available
+/// (mount the drive, bring up an sshfs). Local remotes only: an `s3://` store
+/// has no path to mount.
 #[derive(Serialize, Deserialize, Default)]
 pub struct Config {
     #[serde(default)]
     pub remotes: BTreeMap<String, String>,
     #[serde(default)]
     pub formats: BTreeMap<String, String>,
+    #[serde(default)]
+    pub mounts: BTreeMap<String, String>,
 }
 
 /// One tracked file in a snapshot.
