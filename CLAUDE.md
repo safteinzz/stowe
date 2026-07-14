@@ -4,9 +4,15 @@
 - **Commit only when the user says ship** - never as a checkpoint during work.
   Committing after each feature made the user angry; it is the first step of
   releasing, nothing else.
-- Release flow, in order: `cargo test` green → bump `version` in `Cargo.toml`
-  → one commit (short conventional message, never co-authored) → push main →
-  tag `vX.Y.Z` + push tag → `cargo publish` (irreversible).
+- Release flow, in this exact order: `cargo clippy` warning-clean + `cargo test`
+  green → bump `version` in `Cargo.toml` → one commit (short conventional
+  message, never co-authored) → `git push origin main` → `cargo publish`
+  (dry-run first; publishing is irreversible) → **tag only after publish
+  succeeds**: `git tag vX.Y.Z && git push origin --tags`. A tag must never
+  point at a version that failed to publish.
+- Fix the root cause. If a workaround must ship, say the word "workaround" out
+  loud - silently papering over a bug has been called out before. Same for
+  lints: never `#[allow]` a warning away; delete or fix the code it points at.
 - **Never test against the user's real data** - a careless test once wrote
   18GB to the wrong disk. `~/Music` (symlink to a ~16GB library) and the X10
   drive are off limits; use small scratch dirs and the target/release binary,
