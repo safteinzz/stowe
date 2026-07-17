@@ -1,9 +1,9 @@
-# CLAUDE.md
+# AGENTS.md
 
 ## Hard rules
-- **Commit only when the user says ship** - never as a checkpoint during work.
-  Committing after each feature made the user angry; it is the first step of
-  releasing, nothing else.
+- **Commit only when the user says ship.** Commits go in once the changes are
+  tested, which is normally right when they're about to ship; never as a mid-work
+  checkpoint.
 - Release flow, in this exact order: `cargo clippy` warning-clean + `cargo test`
   green → bump `version` in `Cargo.toml` → one commit (short conventional
   message, never co-authored) → `git push origin main` → `cargo publish`
@@ -11,14 +11,13 @@
   succeeds**: `git tag vX.Y.Z && git push origin --tags`. A tag must never
   point at a version that failed to publish.
 - Fix the root cause. If a workaround must ship, say the word "workaround" out
-  loud - silently papering over a bug has been called out before. Same for
-  lints: never `#[allow]` a warning away; delete or fix the code it points at.
-- **Never test against the user's real data** - a careless test once wrote
-  18GB to the wrong disk. `~/Music` (symlink to a ~16GB library) and the X10
-  drive are off limits; use small scratch dirs and the target/release binary,
-  don't reinstall to test.
+  loud, so a silent patch never passes as a real fix. Same for lints: never
+  `#[allow]` a warning away; delete or fix the code it points at.
+- **Never test against real user data.** Use throwaway scratch dirs and the
+  release binary, never the real library or an external local copy; don't
+  reinstall to test.
 - **No em-dashes** anywhere user-facing (README, --help, crate description,
-  commit messages, prose) - the user reads them as AI-generated text.
+  commit messages, prose) - they read as AI-generated text.
 - Every bug fix gets a test - throwaway bash checks let real regressions
   through; that's why tests/cli.rs exists.
 - Linux-first; Windows deliberately unsupported until it can actually be
@@ -26,8 +25,8 @@
 
 ## Invariants and gotchas
 - When checking whether a remote is available: **a folder existing proves
-  nothing** - unmounting leaves the mountpoint dir behind, which is exactly how
-  the 18GB wrong-disk write happened. Proof is the remote's on-disk `.stowe/`
+  nothing** - unmounting leaves the mountpoint dir behind, so a bare directory
+  check can target the wrong disk. Proof is the remote's on-disk `.stowe/`
   marker plus the local last-push record (`.stowe/remotes/<name>`); a known
   remote whose marker is gone must error, never be recreated.
 - When touching `--mount` handling: the script is the sole authority - stowe
