@@ -167,6 +167,48 @@ fn rename_is_applied_as_a_rename_not_a_recopy() {
 }
 
 #[test]
+fn renaming_a_folder_leaves_no_empty_ghost_on_the_mirror() {
+    // Regression: renaming a folder relocates its files (reported as moves) but
+    // the old, now-empty directory was left behind on the mirror, so the drive
+    // looked out of sync even though every file was present.
+    let sb = Sandbox::new();
+    sb.write("Photos/old album/1.jpg", "a");
+    sb.write("Photos/old album/2.jpg", "b");
+    sb.commit("c1");
+    sb.ok(&["remote", "add", "drive", &sb.url("drive")]);
+    sb.ok(&["push", "drive"]);
+
+    std::fs::rename(
+        sb.repo.join("Photos/old album"),
+        sb.repo.join("Photos/new album"),
+    )
+    .unwrap();
+    sb.commit("rename folder");
+    sb.ok(&["push", "drive"]);
+
+    assert!(sb.at("drive/Photos/new album/1.jpg").exists(), "files moved");
+    assert!(
+        !sb.at("drive/Photos/old album").exists(),
+        "the emptied folder must be swept, not left as a ghost"
+    );
+}
+
+#[test]
+fn a_stray_empty_dir_already_on_the_mirror_is_swept() {
+    // Heals a mirror that accumulated ghosts before the sweep existed.
+    let sb = Sandbox::new();
+    sb.write("Music/a.mp3", "a");
+    sb.commit("c1");
+    sb.ok(&["remote", "add", "drive", &sb.url("drive")]);
+    sb.ok(&["push", "drive"]);
+
+    std::fs::create_dir_all(sb.at("drive/Music/ghost/nested")).unwrap();
+    sb.ok(&["push", "drive", "--force"]);
+    assert!(!sb.at("drive/Music/ghost").exists(), "empty ghost swept");
+    assert!(sb.at("drive/Music/a.mp3").exists(), "real files untouched");
+}
+
+#[test]
 fn deleting_a_file_preserves_its_bytes_for_rollback() {
     let sb = Sandbox::new();
     sb.write("Music/a.mp3", "keep-me");

@@ -217,6 +217,11 @@ pub fn sync(repo: &Repo, root: &Path, force: bool) -> Result<SyncReport> {
         })?;
     }
 
+    // Renaming a folder relocates its files but leaves the old directory
+    // behind, empty. Sweep every such ghost (this also heals a mirror that
+    // accumulated them before this pass existed).
+    prune_empty_dirs(root)?;
+
     // History + ref, so the mirror is self-describing.
     let mut new_commits = 0;
     for (h, c) in &history {
@@ -281,6 +286,36 @@ fn preserve(root: &Path, hash: &str, current: &Path) -> Result<()> {
 fn ensure_parent(p: &Path) -> Result<()> {
     if let Some(parent) = p.parent() {
         std::fs::create_dir_all(parent)?;
+    }
+    Ok(())
+}
+
+/// Remove every empty directory on the mirror (except `.stowe`), deepest-first
+/// so a parent is empty by the time we reach it. stowe tracks files, never
+/// directories, so any empty directory on the mirror is an artifact of a rename
+/// or delete and is safe to drop.
+fn prune_empty_dirs(root: &Path) -> Result<()> {
+    let mut dirs = Vec::new();
+    let mut stack = vec![root.to_path_buf()];
+    while let Some(d) = stack.pop() {
+        let rd = match std::fs::read_dir(&d) {
+            Ok(rd) => rd,
+            Err(_) => continue,
+        };
+        for entry in rd.flatten() {
+            if entry.file_name() == std::ffi::OsStr::new(".stowe") {
+                continue;
+            }
+            if entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+                let p = entry.path();
+                stack.push(p.clone());
+                dirs.push(p);
+            }
+        }
+    }
+    dirs.sort_by_key(|p| std::cmp::Reverse(p.components().count()));
+    for d in dirs {
+        let _ = std::fs::remove_dir(&d); // succeeds only if empty
     }
     Ok(())
 }
