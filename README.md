@@ -1,5 +1,7 @@
 # stowe
 
+> **Canonical:** [gitlab.com/safteinzz/stowe](https://gitlab.com/safteinzz/stowe) · **Mirror:** [github.com/safteinzz/stowe](https://github.com/safteinzz/stowe)
+
 **git for the files git chokes on:** music, photos, video, datasets.
 Versioned and deduped, pushed to backups you can still *play*.
 
