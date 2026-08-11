@@ -25,6 +25,7 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
+use crate::ignore::Ignore;
 use crate::model::{Commit, Entry, Manifest};
 use crate::repo::Repo;
 use crate::scan;
@@ -113,7 +114,8 @@ pub fn sync(repo: &Repo, root: &Path, force: bool) -> Result<SyncReport> {
     };
 
     // What's really on the mirror (one walk, reused below for repair).
-    let actual = mirror_sizes(root)?;
+    let ignore = Ignore::load(&repo.root);
+    let actual = mirror_sizes(root, &ignore)?;
 
     // Did someone touch the mirror behind stowe's back, in a way this push would
     // clobber? Cheap check: paths + sizes, no hashing. Bail unless --force.
@@ -342,7 +344,12 @@ fn remove_file_and_empty_dirs(root: &Path, file: &Path) -> Result<()> {
 /// What's *actually* on the mirror right now: repo-relative path -> size.
 /// Cheap (no hashing), and the single source of truth for both drift detection
 /// and repair, so we only walk the tree once.
-fn mirror_sizes(root: &Path) -> Result<HashMap<String, u64>> {
+///
+/// `.stoweignore` applies here as well as to the working tree. That's the whole
+/// point for a phone: a gallery app recreates `.thumbnails/` the moment it
+/// indexes the folder, and junk stowe would never push must not read as drift
+/// and demand `--force` on every single push.
+fn mirror_sizes(root: &Path, ignore: &Ignore) -> Result<HashMap<String, u64>> {
     let mut out = HashMap::new();
     let mut stack = vec![root.to_path_buf()];
     while let Some(dir) = stack.pop() {
@@ -356,19 +363,22 @@ fn mirror_sizes(root: &Path) -> Result<HashMap<String, u64>> {
                 continue;
             }
             let ft = entry.file_type()?;
-            if ft.is_dir() {
-                stack.push(entry.path());
-                continue;
-            }
-            if !ft.is_file() {
-                continue;
-            }
             let abs = entry.path();
             let rel = abs
                 .strip_prefix(root)
                 .unwrap_or(&abs)
                 .to_string_lossy()
                 .replace('\\', "/");
+            if ignore.is_ignored(&rel, ft.is_dir()) {
+                continue;
+            }
+            if ft.is_dir() {
+                stack.push(abs);
+                continue;
+            }
+            if !ft.is_file() {
+                continue;
+            }
             out.insert(rel, entry.metadata()?.len());
         }
     }
@@ -506,7 +516,9 @@ pub fn adapt(repo: &Repo, root: &Path) -> Result<AdaptReport> {
     let rec_by_path: HashMap<&str, &Entry> =
         recorded.iter().map(|e| (e.path.as_str(), e)).collect();
 
-    // The mirror's true current snapshot (captures manual drift).
+    // The mirror's true current snapshot (captures manual drift). Ignored paths
+    // stay out of it, so `adapt` never imports the drive's own junk.
+    let ignore = Ignore::load(&repo.root);
     let mut actual: Manifest = Vec::new();
     let mut stack = vec![root.to_path_buf()];
     while let Some(dir) = stack.pop() {
@@ -520,19 +532,22 @@ pub fn adapt(repo: &Repo, root: &Path) -> Result<AdaptReport> {
                 continue;
             }
             let ft = entry.file_type()?;
-            if ft.is_dir() {
-                stack.push(entry.path());
-                continue;
-            }
-            if !ft.is_file() {
-                continue;
-            }
             let abs = entry.path();
             let rel = abs
                 .strip_prefix(root)
                 .unwrap_or(&abs)
                 .to_string_lossy()
                 .replace('\\', "/");
+            if ignore.is_ignored(&rel, ft.is_dir()) {
+                continue;
+            }
+            if ft.is_dir() {
+                stack.push(abs);
+                continue;
+            }
+            if !ft.is_file() {
+                continue;
+            }
             let size = entry.metadata()?.len();
             // Same path + same size as recorded → trust the stored hash; only
             // hash foreign or resized files (the actual drift).

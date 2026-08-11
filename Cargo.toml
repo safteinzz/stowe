@@ -1,13 +1,16 @@
 [package]
 name = "stowe"
-version = "0.3.1"
+version = "0.3.2"
 edition = "2024"
-description = "git for big and binary files: versioned, deduped, pushed to backups you can still play (mirror) or compact blob stores (S3)."
+description = "where git chokes, stowe stows - versioned, deduped big and binary files, pushed to backups you can still play (mirror) or compact blob stores (S3)"
 license = "AGPL-3.0-only"
 repository = "https://gitlab.com/safteinzz/stowe"
 readme = "README.md"
 keywords = ["backup", "version-control", "vcs", "dedup", "files"]
 categories = ["command-line-utilities", "filesystem"]
+# Screenshots are fetched over the network by crates.io, never read out of the
+# package, so shipping them would only bloat every download.
+exclude = ["readme-assets/"]
 
 [dependencies]
 anyhow     = "1"                                           # error handling

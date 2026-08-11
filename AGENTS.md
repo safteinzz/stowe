@@ -41,6 +41,7 @@ AI-ONLY DOCUMENT. This file exists to give an AI agent the COMPLETE operating pi
 - When changing drift detection: judge drift against the commit being
   *pushed*, not just the recorded snapshot - otherwise adapt → commit → push
   dead-ends on the file that was just adopted.
+- When touching any tree walk: `.stoweignore` (parsed in `src/ignore.rs`) applies to the working tree *and* to every mirror walk (`mirror_sizes`, `adapt`) - a phone regenerates `.thumbnails/` constantly, so junk that is ignored locally but not remotely reads as drift and demands `--force` on every push. Ancestors are checked, so a file inside an ignored dir is ignored even when the caller didn't prune. An explicitly named path (`stowe add junk.tmp`) is still staged.
 - When touching scan/status: `status` never decodes audio; only `add`
   fingerprints (decoding dominates import cost), cached by size+mtime. The
   fingerprint is blake3 of the first ~30s of decoded PCM - survives

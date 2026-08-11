@@ -96,18 +96,6 @@ impl Sandbox {
     }
 }
 
-fn ls(dir: &Path) -> Vec<String> {
-    let mut names: Vec<String> = std::fs::read_dir(dir)
-        .map(|rd| {
-            rd.flatten()
-                .map(|e| e.file_name().to_string_lossy().into_owned())
-                .collect()
-        })
-        .unwrap_or_default();
-    names.sort();
-    names
-}
-
 // --- the basics -------------------------------------------------------------
 
 #[test]
@@ -206,6 +194,65 @@ fn a_stray_empty_dir_already_on_the_mirror_is_swept() {
     sb.ok(&["push", "drive", "--force"]);
     assert!(!sb.at("drive/Music/ghost").exists(), "empty ghost swept");
     assert!(sb.at("drive/Music/a.mp3").exists(), "real files untouched");
+}
+
+#[test]
+fn stoweignore_keeps_junk_out_of_the_commit() {
+    let sb = Sandbox::new();
+    sb.write(
+        ".stoweignore",
+        "# editor and OS litter\n.DS_Store\n*.tmp\ncache/\nRenders/proxies/\n",
+    );
+    sb.write("Photos/shot.NEF", "keep");
+    sb.write("Photos/.DS_Store", "junk");
+    sb.write("Photos/cache/thumb.jpg", "junk");
+    sb.write("Renders/final.exr", "keep");
+    sb.write("Renders/scratch.tmp", "junk");
+    sb.write("Renders/proxies/shot.mov", "junk");
+    // Same folder name, but the anchored rule only covers Renders/proxies.
+    sb.write("Video/proxies/keepme.mov", "keep");
+
+    let out = sb.ok(&["status"]);
+    for junk in [".DS_Store", "thumb.jpg", "scratch.tmp", "proxies/shot.mov"] {
+        assert!(!out.contains(junk), "`{junk}` should be ignored:\n{out}");
+    }
+    for kept in ["shot.NEF", "final.exr", "keepme.mov"] {
+        assert!(out.contains(kept), "`{kept}` should be tracked:\n{out}");
+    }
+
+    // And the ignored files must not reach a remote either.
+    sb.commit("import");
+    sb.ok(&["remote", "add", "drive", &sb.url("drive")]);
+    sb.ok(&["push", "drive"]);
+    assert!(sb.at("drive/Photos/shot.NEF").exists(), "real file pushed");
+    assert!(!sb.at("drive/Photos/.DS_Store").exists(), "junk not pushed");
+    assert!(!sb.at("drive/Photos/cache").exists(), "junk dir not pushed");
+    assert!(!sb.at("drive/Renders/proxies").exists(), "anchored dir not pushed");
+    assert!(sb.at("drive/Video/proxies/keepme.mov").exists(), "lookalike kept");
+}
+
+#[test]
+fn ignored_junk_on_a_mirror_is_not_drift() {
+    // The phone case: a gallery app recreates .thumbnails/ on every scan, and
+    // that must not block the next push or demand --force forever.
+    let sb = Sandbox::new();
+    sb.write(".stoweignore", ".thumbnails/\n");
+    sb.write("Music/song.mp3", "a");
+    sb.commit("c1");
+    sb.ok(&["remote", "add", "phone", &sb.url("phone")]);
+    sb.ok(&["push", "phone"]);
+
+    std::fs::create_dir_all(sb.at("phone/Music/.thumbnails")).unwrap();
+    std::fs::write(sb.at("phone/Music/.thumbnails/.database_uuid"), "x").unwrap();
+
+    sb.write("Music/second.mp3", "b");
+    sb.commit("c2");
+    let out = sb.ok(&["push", "phone"]); // must not need --force
+    assert!(out.contains("+1 new"), "the real file went: {out}");
+    assert!(
+        sb.at("phone/Music/.thumbnails/.database_uuid").exists(),
+        "the phone's own junk is left alone, not deleted"
+    );
 }
 
 #[test]
@@ -584,11 +631,4 @@ fn walk_files(dir: &Path) -> Vec<PathBuf> {
         }
     }
     out
-}
-
-#[test]
-fn ls_helper_is_sane() {
-    let sb = Sandbox::new();
-    sb.write("a.txt", "x");
-    assert!(ls(&sb.repo).contains(&"a.txt".to_string()));
 }

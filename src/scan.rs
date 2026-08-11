@@ -8,6 +8,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::time::UNIX_EPOCH;
 use walkdir::WalkDir;
 
+use crate::ignore::Ignore;
 use crate::model::{Entry, Manifest};
 use crate::repo::Repo;
 
@@ -93,13 +94,18 @@ pub fn entry_for(root: &std::path::Path, abs: &std::path::Path, fingerprint: boo
 }
 
 /// All tracked files under `dir` (recursive), as absolute paths, skipping the
-/// `.stowe` metadata dir. Used to stage a directory argument.
-pub fn files_under(dir: &std::path::Path) -> Result<Vec<std::path::PathBuf>> {
+/// `.stowe` metadata dir and anything `.stoweignore` excludes. Used to stage a
+/// directory argument.
+pub fn files_under(
+    root: &std::path::Path,
+    dir: &std::path::Path,
+    ignore: &Ignore,
+) -> Result<Vec<std::path::PathBuf>> {
     let mut out = Vec::new();
-    for entry in WalkDir::new(dir)
-        .into_iter()
-        .filter_entry(|e| e.file_name() != ".stowe")
-    {
+    for entry in WalkDir::new(dir).into_iter().filter_entry(|e| {
+        e.file_name() != ".stowe"
+            && !ignore.is_ignored(&rel_path(root, e.path()), e.file_type().is_dir())
+    }) {
         let entry = entry?;
         if entry.file_type().is_file() {
             out.push(entry.path().to_path_buf());
@@ -145,7 +151,9 @@ struct Found {
     mtime: i64,
 }
 
-/// Recursively collect every file under `dir` into `out`, skipping `.stowe`.
+/// Recursively collect every file under `dir` into `out`, skipping `.stowe` and
+/// anything `.stoweignore` excludes (ignored directories are pruned whole, so
+/// their contents are never even stat'd).
 ///
 /// Uses `read_dir` + [`std::fs::DirEntry::metadata`], so each file's size/mtime
 /// comes from an `fstatat` relative to the already-open directory fd. That
@@ -159,6 +167,7 @@ fn collect_files(
     dir: &std::path::Path,
     out: &mut Vec<Found>,
     prog: &Progress,
+    ignore: &Ignore,
 ) -> Result<()> {
     for entry in std::fs::read_dir(dir)? {
         let entry = entry?;
@@ -167,17 +176,25 @@ fn collect_files(
         }
         let ft = entry.file_type()?;
         if ft.is_dir() {
-            collect_files(root, &entry.path(), out, prog)?;
+            let abs = entry.path();
+            if ignore.is_ignored(&rel_path(root, &abs), true) {
+                continue;
+            }
+            collect_files(root, &abs, out, prog, ignore)?;
         } else if ft.is_file() {
+            let abs = entry.path();
+            let rel = rel_path(root, &abs);
+            if ignore.is_ignored(&rel, false) {
+                continue;
+            }
             let meta = entry.metadata()?;
             let mtime = meta
                 .modified()?
                 .duration_since(UNIX_EPOCH)
                 .map(|d| d.as_secs() as i64)
                 .unwrap_or(0);
-            let abs = entry.path();
             out.push(Found {
-                rel: rel_path(root, &abs),
+                rel,
                 abs,
                 size: meta.len(),
                 mtime,
@@ -210,7 +227,8 @@ pub fn scan(repo: &Repo, cache_source: &Manifest, fingerprint: bool) -> Result<M
     // and - because it goes through a single FUSE daemon on mounted drives -
     // parallelising it only adds contention, so the walk stays sequential.
     let mut found: Vec<Found> = Vec::new();
-    collect_files(&repo.root, &repo.root, &mut found, &prog)?;
+    let ignore = Ignore::load(&repo.root);
+    collect_files(&repo.root, &repo.root, &mut found, &prog, &ignore)?;
 
     // Content hashing *is* worth parallelising (CPU-bound, per-file independent),
     // so fan it across cores. A cache hit (unchanged size+mtime) reuses the

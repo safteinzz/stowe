@@ -5,6 +5,7 @@
 //! is just a dumb file store. See the module docs for the on-disk layout.
 
 mod audio;
+mod ignore;
 mod mirror;
 mod model;
 mod names;
@@ -28,6 +29,10 @@ const REMOTES_NOTE: &str = "Every remote is one of two shapes:
   mirror   real, playable folders - a drive or phone you can browse & play
   backup   deduped content-addressed blobs - S3, or a space-saving archive
 Local remotes default to mirror, s3:// to backup; set it with `remote add --format`.
+
+A `.stoweignore` at the repo root keeps paths out of every scan, local and
+remote: bare names match anywhere, a trailing `/` means directories only, and a
+pattern with a `/` is anchored at the root.
 Run `stowe <command> --help` for the full detail of any command.";
 
 #[derive(Parser)]
@@ -267,7 +272,7 @@ fn cmd_add(paths: Vec<PathBuf>, all: bool) -> Result<()> {
 
         if abs.is_dir() {
             // Stage every file under the directory (in parallel)...
-            let entries: Vec<Entry> = scan::files_under(&abs)?
+            let entries: Vec<Entry> = scan::files_under(&root, &abs, &ignore::Ignore::load(&root))?
                 .par_iter()
                 .map(|f| scan::entry_for(&root, f, true))
                 .collect::<Result<_>>()?;
