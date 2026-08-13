@@ -2,12 +2,9 @@
 
 > **Canonical:** [gitlab.com/safteinzz/stowe](https://gitlab.com/safteinzz/stowe) · **Mirror:** [github.com/safteinzz/stowe](https://github.com/safteinzz/stowe)
 
-**Where git chokes, stowe stows.** 📦
-
-`stowe` versions the files git was never built for: photos, video, music,
-datasets. Content-addressed and deduped, with a linear history and no content
-diffs. It pushes to backups you can still open, and reorganising your archive
-costs a rename, not a re-upload.
+<!-- desc:start -->
+where git chokes, stowe stows - versioned, deduped big and binary files, pushed to backups you can still play (mirror) or compact blob stores (S3)
+<!-- desc:end -->
 
 ```sh
 cargo install stowe

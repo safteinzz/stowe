@@ -39,7 +39,7 @@ Run `stowe <command> --help` for the full detail of any command.";
 #[command(
     name = "stowe",
     version,
-    about = "git for the files git chokes on: versioned, deduped, playable backups on any remote",
+    about,
     after_help = REMOTES_NOTE,
     arg_required_else_help = true
 )]
