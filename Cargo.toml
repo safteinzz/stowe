@@ -3,6 +3,7 @@ name = "stowe"
 version = "0.3.2"
 edition = "2024"
 description = "where git chokes, stowe stows - versioned, deduped big and binary files, pushed to backups you can still play (mirror) or compact blob stores (S3)"
+authors = ["Pablo Antonio Hernández Hernández (safteinzz)"]
 license = "AGPL-3.0-only"
 repository = "https://gitlab.com/safteinzz/stowe"
 readme = "README.md"

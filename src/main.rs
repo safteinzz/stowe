@@ -25,7 +25,8 @@ use repo::Repo;
 
 /// Shown at the bottom of `stowe --help`: the one distinction the command list
 /// can't convey - that a remote is either a playable mirror or a blob backup.
-const REMOTES_NOTE: &str = "Every remote is one of two shapes:
+const REMOTES_NOTE: &str = concat!(
+    "Every remote is one of two shapes:
   mirror   real, playable folders - a drive or phone you can browse & play
   backup   deduped content-addressed blobs - S3, or a space-saving archive
 Local remotes default to mirror, s3:// to backup; set it with `remote add --format`.
@@ -33,12 +34,31 @@ Local remotes default to mirror, s3:// to backup; set it with `remote add --form
 A `.stoweignore` at the repo root keeps paths out of every scan, local and
 remote: bare names match anywhere, a trailing `/` means directories only, and a
 pattern with a `/` is anchored at the root.
-Run `stowe <command> --help` for the full detail of any command.";
+Run `stowe <command> --help` for the full detail of any command.",
+    "\n\nby ",
+    env!("CARGO_PKG_AUTHORS"),
+    "  ",
+    env!("CARGO_PKG_REPOSITORY"),
+);
+
+/// `-V` stays a bare version string for scripts; `--version` spells out who
+/// wrote it, under what license, and where it lives. Every field comes from
+/// Cargo.toml, so none of it can drift from the manifest.
+const LONG_VERSION: &str = concat!(
+    env!("CARGO_PKG_VERSION"),
+    "\n",
+    env!("CARGO_PKG_AUTHORS"),
+    "\n",
+    env!("CARGO_PKG_LICENSE"),
+    "  ",
+    env!("CARGO_PKG_REPOSITORY"),
+);
 
 #[derive(Parser)]
 #[command(
     name = "stowe",
     version,
+    long_version = LONG_VERSION,
     about,
     after_help = REMOTES_NOTE,
     arg_required_else_help = true
