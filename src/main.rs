@@ -35,23 +35,23 @@ A `.stoweignore` at the repo root keeps paths out of every scan, local and
 remote: bare names match anywhere, a trailing `/` means directories only, and a
 pattern with a `/` is anchored at the root.
 Run `stowe <command> --help` for the full detail of any command.",
-    "\n\nby ",
-    env!("CARGO_PKG_AUTHORS"),
-    "  ",
+    "\n\n",
     env!("CARGO_PKG_REPOSITORY"),
+    "\ncontributors: ",
+    env!("CARGO_PKG_AUTHORS"),
 );
 
-/// `-V` stays a bare version string for scripts; `--version` spells out who
-/// wrote it, under what license, and where it lives. Every field comes from
+/// `-V` stays a bare version string for scripts; `--version` spells out the
+/// license, where it lives, and who's contributed. Every field comes from
 /// Cargo.toml, so none of it can drift from the manifest.
 const LONG_VERSION: &str = concat!(
     env!("CARGO_PKG_VERSION"),
     "\n",
-    env!("CARGO_PKG_AUTHORS"),
-    "\n",
     env!("CARGO_PKG_LICENSE"),
     "  ",
     env!("CARGO_PKG_REPOSITORY"),
+    "\ncontributors: ",
+    env!("CARGO_PKG_AUTHORS"),
 );
 
 #[derive(Parser)]
