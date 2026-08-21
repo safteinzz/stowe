@@ -77,7 +77,9 @@ pull     rebuild the working tree from a remote          [remote]
 adapt    pull a remote's by-hand changes into local      [remote]
 restore  recover committed files  <paths...> -A --from COMMIT --remote R
 convert  flip a remote between mirror and backup, in place  --to FORMAT
-update   update stowe to the latest release   -y
+self     update or check stowe itself
+           update [-y]   reinstall the latest release
+           check         is a newer release out?
 ```
 
 ## Ignoring junk

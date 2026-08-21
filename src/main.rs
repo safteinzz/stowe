@@ -12,6 +12,7 @@ mod names;
 mod remote;
 mod repo;
 mod scan;
+mod selfcmd;
 
 use anyhow::{Context, Result, anyhow, bail};
 use clap::{Parser, Subcommand};
@@ -158,14 +159,11 @@ enum Cmd {
         #[arg(long, value_parser = ["mirror", "backup"])]
         to: Option<String>,
     },
-    /// Update stowe to the latest release
-    ///   -y          skip the confirmation prompt
-    #[command(verbatim_doc_comment)]
-    Update {
-        /// Skip the confirmation prompt.
-        #[arg(short, long)]
-        yes: bool,
-    },
+    /// Manage stowe itself
+    ///   update      reinstall the latest release   -y skips the prompt
+    ///   check       is a newer release out? (installs nothing)
+    #[command(name = "self", subcommand, verbatim_doc_comment)]
+    Selfie(selfcmd::Cmd),
 }
 
 #[derive(Subcommand)]
@@ -203,7 +201,7 @@ fn main() -> Result<()> {
         Cmd::Restore { paths, all, from, remote } => cmd_restore(paths, all, from.as_deref(), &remote),
         Cmd::Adapt { remote } => cmd_adapt(&remote),
         Cmd::Convert { remote, to } => cmd_convert(&remote, to.as_deref()),
-        Cmd::Update { yes } => cmd_update(yes),
+        Cmd::Selfie(cmd) => selfcmd::run(cmd),
     }
 }
 
@@ -982,48 +980,6 @@ fn cmd_convert(name: &str, to: Option<&str>) -> Result<()> {
         r.preserved
     );
     Ok(())
-}
-
-/// `stowe update` - reinstall the latest release with `cargo install stowe
-/// --force`. Prompts first unless `-y`.
-fn cmd_update(yes: bool) -> Result<()> {
-    use colored::Colorize;
-    use std::io::Write;
-
-    if !yes {
-        print!(
-            "{} {} ",
-            "Update stowe to the latest release via cargo?".bold(),
-            "[y/N]".dimmed()
-        );
-        std::io::stdout().flush().ok();
-        let mut input = String::new();
-        std::io::stdin().read_line(&mut input).ok();
-        if !matches!(input.trim().to_lowercase().as_str(), "y" | "yes") {
-            println!("{}", "Aborted.".dimmed());
-            return Ok(());
-        }
-    }
-
-    println!(
-        "{} {}\n",
-        "Updating stowe via".dimmed(),
-        "cargo install stowe --force".bold()
-    );
-
-    match std::process::Command::new("cargo")
-        .args(["install", "stowe", "--force"])
-        .status()
-    {
-        Ok(status) if status.success() => {
-            println!("\n{}", "✓ stowe is up to date.".green());
-            Ok(())
-        }
-        Ok(status) => bail!("update failed (cargo exited {})", status.code().unwrap_or(1)),
-        Err(e) => {
-            bail!("could not run cargo: {e} - is it installed and on PATH? (https://rustup.rs)")
-        }
-    }
 }
 
 // --- helpers ----------------------------------------------------------------
