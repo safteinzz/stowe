@@ -174,7 +174,10 @@ fn renaming_a_folder_leaves_no_empty_ghost_on_the_mirror() {
     sb.commit("rename folder");
     sb.ok(&["push", "drive"]);
 
-    assert!(sb.at("drive/Photos/new album/1.jpg").exists(), "files moved");
+    assert!(
+        sb.at("drive/Photos/new album/1.jpg").exists(),
+        "files moved"
+    );
     assert!(
         !sb.at("drive/Photos/old album").exists(),
         "the emptied folder must be swept, not left as a ghost"
@@ -227,8 +230,14 @@ fn stoweignore_keeps_junk_out_of_the_commit() {
     assert!(sb.at("drive/Photos/shot.NEF").exists(), "real file pushed");
     assert!(!sb.at("drive/Photos/.DS_Store").exists(), "junk not pushed");
     assert!(!sb.at("drive/Photos/cache").exists(), "junk dir not pushed");
-    assert!(!sb.at("drive/Renders/proxies").exists(), "anchored dir not pushed");
-    assert!(sb.at("drive/Video/proxies/keepme.mov").exists(), "lookalike kept");
+    assert!(
+        !sb.at("drive/Renders/proxies").exists(),
+        "anchored dir not pushed"
+    );
+    assert!(
+        sb.at("drive/Video/proxies/keepme.mov").exists(),
+        "lookalike kept"
+    );
 }
 
 #[test]
@@ -302,8 +311,14 @@ fn pull_rebuilds_a_library_on_a_fresh_machine() {
     run(&["remote", "add", "drive", &sb.url("drive")]);
     run(&["pull", "drive"]);
 
-    assert_eq!(std::fs::read_to_string(pc2.join("Music/a.mp3")).unwrap(), "a");
-    assert_eq!(std::fs::read_to_string(pc2.join("Music/b.mp3")).unwrap(), "b");
+    assert_eq!(
+        std::fs::read_to_string(pc2.join("Music/a.mp3")).unwrap(),
+        "a"
+    );
+    assert_eq!(
+        std::fs::read_to_string(pc2.join("Music/b.mp3")).unwrap(),
+        "b"
+    );
 }
 
 // --- drift ------------------------------------------------------------------
@@ -454,12 +469,20 @@ fn a_mount_command_that_fails_stops_the_push() {
     sb.write("Music/a.mp3", "a");
     sb.commit("c1");
     sb.ok(&[
-        "remote", "add", "phone", &sb.url("phone/Music"), "--mount", "exit 7",
+        "remote",
+        "add",
+        "phone",
+        &sb.url("phone/Music"),
+        "--mount",
+        "exit 7",
     ]);
 
     let err = sb.fails(&["push", "phone"]);
     assert!(err.contains("mount command"), "got: {err}");
-    assert!(!sb.at("phone").exists(), "nothing written on a failed mount");
+    assert!(
+        !sb.at("phone").exists(),
+        "nothing written on a failed mount"
+    );
 }
 
 #[test]
@@ -495,7 +518,14 @@ fn a_mount_that_stops_working_cannot_recreate_a_known_remote() {
     // Now the drive goes away, and the mount quietly does nothing (exit 0), but
     // the mountpoint folder `mnt/` is still sitting there.
     std::fs::remove_dir_all(sb.at("mnt/Phone")).unwrap();
-    sb.ok(&["remote", "add", "phone", &sb.url("mnt/Phone"), "--mount", "true"]);
+    sb.ok(&[
+        "remote",
+        "add",
+        "phone",
+        &sb.url("mnt/Phone"),
+        "--mount",
+        "true",
+    ]);
 
     let err = sb.fails(&["push", "phone"]);
     assert!(err.contains("isn't there now"), "got: {err}");
@@ -509,7 +539,12 @@ fn a_mount_that_stops_working_cannot_recreate_a_known_remote() {
 fn mount_is_rejected_on_a_remote_with_nothing_to_mount() {
     let sb = Sandbox::new();
     let err = sb.fails(&[
-        "remote", "add", "cloud", "s3://bucket/music", "--mount", "whatever",
+        "remote",
+        "add",
+        "cloud",
+        "s3://bucket/music",
+        "--mount",
+        "whatever",
     ]);
     assert!(err.contains("nothing to mount"), "got: {err}");
 }
@@ -542,7 +577,14 @@ fn restore_from_an_older_commit_is_a_time_machine() {
     sb.commit("c2");
     sb.ok(&["push", "drive"]);
 
-    sb.ok(&["restore", "--from", &c1, "--remote", "drive", "Music/song.mp3"]);
+    sb.ok(&[
+        "restore",
+        "--from",
+        &c1,
+        "--remote",
+        "drive",
+        "Music/song.mp3",
+    ]);
     assert_eq!(sb.read("Music/song.mp3"), "original");
 }
 
@@ -584,7 +626,12 @@ fn a_local_remote_can_be_forced_to_the_backup_format() {
     sb.write("Music/a.mp3", "a");
     sb.commit("c1");
     sb.ok(&[
-        "remote", "add", "blobs", &sb.url("blobs"), "--format", "backup",
+        "remote",
+        "add",
+        "blobs",
+        &sb.url("blobs"),
+        "--format",
+        "backup",
     ]);
     sb.ok(&["push", "blobs"]);
 

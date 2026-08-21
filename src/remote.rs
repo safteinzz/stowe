@@ -14,8 +14,11 @@ use futures::stream::{self, StreamExt};
 use opendal::{Operator, services};
 use std::io::{IsTerminal, Write};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicUsize, Ordering};
+
+use crate::repo::Repo;
+use anyhow::anyhow;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
 use tokio::io::AsyncReadExt;
 
 /// How many object uploads to keep in flight at once.
@@ -179,4 +182,159 @@ async fn upload_one(op: &Operator, key: &str, src: &Path) -> Result<()> {
     }
     writer.close().await?;
     Ok(())
+}
+
+/// The on-disk format for a remote: an explicit config override, or the scheme
+/// default (local paths are playable mirrors, everything else is an object store).
+pub(crate) fn remote_format(
+    cfg: &crate::model::Config,
+    name: &str,
+    url: &str,
+) -> crate::mirror::Format {
+    match cfg.formats.get(name).map(String::as_str) {
+        Some("backup") => crate::mirror::Format::Backup,
+        Some("mirror") => crate::mirror::Format::Mirror,
+        _ if crate::mirror::local_root(url).is_some() => crate::mirror::Format::Mirror,
+        _ => crate::mirror::Format::Backup,
+    }
+}
+
+pub(crate) fn remote_url(repo: &Repo, name: &str) -> Result<String> {
+    repo.config()?
+        .remotes
+        .get(name)
+        .cloned()
+        .ok_or_else(|| anyhow!("no remote named `{name}` - add one: stowe remote add {name} <url>"))
+}
+
+/// Whether a remote's location is usable right now. A local path is reachable
+/// if it exists, or its parent does (so a first push can still create it).
+/// Non-local remotes (s3) are assumed reachable; their backend handles it.
+pub(crate) fn remote_reachable(url: &str) -> bool {
+    match crate::mirror::local_root(url) {
+        Some(root) => root.exists() || root.parent().map(Path::exists).unwrap_or(false),
+        None => true,
+    }
+}
+
+/// Make sure a remote is really there before we write a byte to it.
+///
+/// The hard lesson behind this: *"a folder exists"* is not proof a remote is
+/// mounted. Unmounting never removes the mountpoint, so a leftover empty
+/// directory will happily accept an entire library onto the local disk. So:
+///
+/// 1. If the remote has a `mount` command, that command is the authority (it
+///    can ask the kernel; a stale folder can't fool it). Always run it, every
+///    time. It's expected to be a no-op when already mounted.
+/// 2. Belt and braces: a genuinely mounted remote lives on its own filesystem.
+///    If it's still on the local disk after mounting "succeeded", refuse.
+/// 3. With no mount command: if we've pushed here before, the remote must still
+///    carry its marker. Gone means the drive is gone, and we must never
+///    recreate the folder.
+pub(crate) fn ensure_reachable(
+    repo: &Repo,
+    cfg: &crate::model::Config,
+    name: &str,
+    url: &str,
+) -> Result<()> {
+    // Non-local remotes (s3) have no path to mount; their backend handles it.
+    let Some(root) = crate::mirror::local_root(url) else {
+        return Ok(());
+    };
+
+    // The remote knows how to make itself available: let it, before we judge.
+    if let Some(cmd) = cfg.mounts.get(name) {
+        run_mount(name, cmd)?;
+        // A mount command exists precisely because this remote lives on its own
+        // device. If we'd still be writing to the local disk, the mount didn't
+        // take, whatever the script claimed.
+        if on_local_disk(&root) {
+            bail!(
+                "`{name}`: the mount command succeeded, but {} is still on your local disk. \
+                 Refusing to write there - the drive would be backed up to the wrong place.",
+                root.display()
+            );
+        }
+    }
+
+    // Written here before? Then the remote must still carry its marker. If it's
+    // gone, so is the drive, and we must never recreate the folder: that is
+    // exactly how an entire library ends up copied onto the local disk.
+    let known = repo.remote_head(name)?.is_some();
+    if known && crate::mirror::detect_format(&root) == crate::mirror::Format::Empty {
+        bail!(
+            "remote `{name}` ({}) has been pushed to before, but isn't there now. \
+             Is the drive connected? (refusing to recreate it)",
+            root.display()
+        );
+    }
+
+    if !remote_reachable(url) {
+        bail!(
+            "remote `{name}` ({}) isn't reachable. Is the drive connected?",
+            root.display()
+        );
+    }
+    Ok(())
+}
+
+/// True when `path` sits on the same filesystem as `/`, i.e. nothing is really
+/// mounted there. Any genuine mount (drive, phone, sshfs) gets its own device
+/// id, so this catches "the script said OK but we'd be writing to local disk".
+/// Falls back to the nearest existing ancestor, since the remote's own folder
+/// may not exist yet on a first push.
+///
+/// Best-effort, and deliberately secondary to the marker check: it only sees the
+/// mistake when the remote path lives on the root filesystem, so a separate
+/// `/home` partition (or a path under `/tmp`) hides it. The marker check is what
+/// actually guarantees we never rewrite a remote that isn't there.
+#[cfg(unix)]
+pub(crate) fn on_local_disk(path: &Path) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    let device_of = |p: &Path| -> Option<u64> {
+        let mut cur = Some(p);
+        while let Some(c) = cur {
+            if let Ok(md) = std::fs::metadata(c) {
+                return Some(md.dev());
+            }
+            cur = c.parent();
+        }
+        None
+    };
+    match (device_of(path), device_of(Path::new("/"))) {
+        (Some(here), Some(root_fs)) => here == root_fs,
+        _ => false, // can't tell: don't block on a guess
+    }
+}
+
+#[cfg(not(unix))]
+pub(crate) fn on_local_disk(_path: &Path) -> bool {
+    false
+}
+
+/// Run a remote's mount command through the platform shell, so the configured
+/// value can be an inline command *or* a path to a script (a script path is
+/// just a command). Echoed before running: it's your shell, but you should see
+/// what stowe is about to execute.
+pub(crate) fn run_mount(name: &str, cmd: &str) -> Result<()> {
+    use colored::Colorize;
+    println!(
+        "{} {}",
+        "mounting".dimmed(),
+        format!("`{name}`: {cmd}").dimmed()
+    );
+
+    #[cfg(windows)]
+    let status = std::process::Command::new("cmd").args(["/C", cmd]).status();
+    #[cfg(not(windows))]
+    let status = std::process::Command::new("sh").arg("-c").arg(cmd).status();
+
+    match status {
+        Ok(s) if s.success() => Ok(()),
+        Ok(s) => bail!(
+            "mount command for `{name}` failed (exit {})",
+            s.code().unwrap_or(1)
+        ),
+        Err(e) => bail!("could not run the mount command for `{name}`: {e}"),
+    }
 }

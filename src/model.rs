@@ -59,3 +59,13 @@ pub struct Commit {
     pub time: i64,
     pub files: Manifest,
 }
+
+/// True if `path` is `prefix` itself or sits beneath it (or `prefix` is the
+/// repo root, i.e. empty).
+pub(crate) fn under_prefix(path: &str, prefix: &str) -> bool {
+    prefix.is_empty() || path == prefix || path.starts_with(&format!("{prefix}/"))
+}
+
+pub(crate) fn short(hash: &str) -> &str {
+    &hash[..hash.len().min(10)]
+}

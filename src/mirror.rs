@@ -82,7 +82,10 @@ impl Drift {
     }
     fn report(&self) {
         use colored::Colorize;
-        eprintln!("{}", "the mirror was changed outside stowe:".yellow().bold());
+        eprintln!(
+            "{}",
+            "the mirror was changed outside stowe:".yellow().bold()
+        );
         for p in &self.foreign {
             eprintln!("  {} {p}", "added on mirror:".green());
         }
@@ -141,8 +144,10 @@ pub fn sync(repo: &Repo, root: &Path, force: bool) -> Result<SyncReport> {
     }
     let target_by_path: HashMap<&str, &Entry> =
         target.iter().map(|e| (e.path.as_str(), e)).collect();
-    let remote_by_path: HashMap<&str, &Entry> =
-        remote_manifest.iter().map(|e| (e.path.as_str(), e)).collect();
+    let remote_by_path: HashMap<&str, &Entry> = remote_manifest
+        .iter()
+        .map(|e| (e.path.as_str(), e))
+        .collect();
 
     let prog = scan::Progress::new();
 
@@ -281,7 +286,8 @@ fn preserve(root: &Path, hash: &str, current: &Path) -> Result<()> {
     }
     ensure_parent(&obj)?;
     // Rename frees the real path for the new content and is instant on-device.
-    std::fs::rename(current, &obj).with_context(|| format!("preserving old {}", current.display()))?;
+    std::fs::rename(current, &obj)
+        .with_context(|| format!("preserving old {}", current.display()))?;
     Ok(())
 }
 
@@ -435,8 +441,8 @@ pub struct PullReport {
 /// the working tree from the mirror's real files (falling back to preserved
 /// versions in `.stowe/objects/` if a current file is somehow missing).
 pub fn pull(repo: &Repo, root: &Path) -> Result<PullReport> {
-    let remote_head =
-        read_ref(root)?.ok_or_else(|| anyhow!("mirror `{}` is empty - nothing to pull", root.display()))?;
+    let remote_head = read_ref(root)?
+        .ok_or_else(|| anyhow!("mirror `{}` is empty - nothing to pull", root.display()))?;
 
     // Copy down the commit chain metadata we don't already have.
     let mut new_commits = 0;
@@ -473,8 +479,7 @@ pub fn pull(repo: &Repo, root: &Path) -> Result<PullReport> {
             object_path(root, &e.hash)
         };
         ensure_parent(&dest)?;
-        std::fs::copy(&src, &dest)
-            .with_context(|| format!("pulling {} from mirror", e.path))?;
+        std::fs::copy(&src, &dest).with_context(|| format!("pulling {} from mirror", e.path))?;
         written += 1;
     }
     repo.clear_index()?;
@@ -610,14 +615,17 @@ pub fn fetch(root: &Path, hash: &str, dest: &Path) -> Result<bool> {
         obj
     } else {
         // Maybe it's a file that's still current on the mirror.
-        let Some(h) = read_ref(root)? else { return Ok(false) };
+        let Some(h) = read_ref(root)? else {
+            return Ok(false);
+        };
         match read_commit_files(root, &h)?.iter().find(|e| e.hash == hash) {
             Some(e) => root.join(&e.path),
             None => return Ok(false),
         }
     };
     ensure_parent(dest)?;
-    std::fs::copy(&src, dest).with_context(|| format!("restoring {} from mirror", dest.display()))?;
+    std::fs::copy(&src, dest)
+        .with_context(|| format!("restoring {} from mirror", dest.display()))?;
     Ok(true)
 }
 
@@ -671,8 +679,9 @@ pub fn backup_to_mirror(root: &Path) -> Result<ConvertReport> {
         .context("reading remote refs/main")?
         .trim()
         .to_string();
-    let commit: Commit =
-        serde_json::from_slice(&std::fs::read(root.join("commits").join(format!("{head}.json")))?)?;
+    let commit: Commit = serde_json::from_slice(&std::fs::read(
+        root.join("commits").join(format!("{head}.json")),
+    )?)?;
     let manifest = commit.files;
 
     std::fs::create_dir_all(dot(root).join("objects"))?;
@@ -688,8 +697,7 @@ pub fn backup_to_mirror(root: &Path) -> Result<ConvertReport> {
             std::fs::copy(root.join(first), &dest)?;
         } else {
             let blob = root.join("objects").join(&e.hash[..2]).join(&e.hash[2..]);
-            std::fs::rename(&blob, &dest)
-                .with_context(|| format!("materializing {}", e.path))?;
+            std::fs::rename(&blob, &dest).with_context(|| format!("materializing {}", e.path))?;
             placed.insert(&e.hash, &e.path);
         }
         files += 1;
@@ -701,7 +709,10 @@ pub fn backup_to_mirror(root: &Path) -> Result<ConvertReport> {
     // Relocate history + ref under `.stowe/`.
     move_flat(&root.join("commits"), &dot(root).join("commits"))?;
     std::fs::create_dir_all(dot(root).join("refs"))?;
-    std::fs::rename(root.join("refs").join("main"), dot(root).join("refs").join("main"))?;
+    std::fs::rename(
+        root.join("refs").join("main"),
+        dot(root).join("refs").join("main"),
+    )?;
     for stale in ["objects", "commits", "refs"] {
         let _ = std::fs::remove_dir_all(root.join(stale));
     }
@@ -738,7 +749,10 @@ pub fn mirror_to_backup(root: &Path) -> Result<ConvertReport> {
     // History + ref move back to the root.
     move_flat(&dot(root).join("commits"), &root.join("commits"))?;
     std::fs::create_dir_all(root.join("refs"))?;
-    std::fs::rename(dot(root).join("refs").join("main"), root.join("refs").join("main"))?;
+    std::fs::rename(
+        dot(root).join("refs").join("main"),
+        root.join("refs").join("main"),
+    )?;
     let _ = std::fs::remove_dir_all(dot(root));
 
     // The now-empty playable directories (everything but the object store) go.
@@ -768,7 +782,8 @@ fn move_object_tree(src: &Path, dst: &Path) -> Result<usize> {
             continue;
         }
         let dst_shard = dst.join(shard.file_name());
-        let blobs: Vec<_> = std::fs::read_dir(shard.path())?.collect::<std::result::Result<_, _>>()?;
+        let blobs: Vec<_> =
+            std::fs::read_dir(shard.path())?.collect::<std::result::Result<_, _>>()?;
         for blob in blobs {
             std::fs::create_dir_all(&dst_shard)?;
             let target = dst_shard.join(blob.file_name());

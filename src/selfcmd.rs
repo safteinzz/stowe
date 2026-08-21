@@ -53,8 +53,13 @@ fn update(yes: bool) -> Result<()> {
             println!("\n{}", "✓ stowe is up to date.".green());
             Ok(())
         }
-        Ok(status) => bail!("update failed (cargo exited {})", status.code().unwrap_or(1)),
-        Err(e) => bail!("could not run cargo: {e} - is it installed and on PATH? (https://rustup.rs)"),
+        Ok(status) => bail!(
+            "update failed (cargo exited {})",
+            status.code().unwrap_or(1)
+        ),
+        Err(e) => {
+            bail!("could not run cargo: {e} - is it installed and on PATH? (https://rustup.rs)")
+        }
     }
 }
 
@@ -90,7 +95,9 @@ fn latest() -> Result<String> {
         .output();
     let out = match out {
         Ok(out) => out,
-        Err(e) => bail!("could not run cargo: {e} - is it installed and on PATH? (https://rustup.rs)"),
+        Err(e) => {
+            bail!("could not run cargo: {e} - is it installed and on PATH? (https://rustup.rs)")
+        }
     };
     if !out.status.success() {
         bail!(

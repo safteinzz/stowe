@@ -42,6 +42,12 @@ Working brief for an AI coding agent, not documentation for people (the README c
 - Unit tests sit in the source files, end-to-end tests in `tests/cli.rs`.
 
 ## Overview
+Layout:
+- `src/main.rs` - the clap `Cmd` enum and the dispatch match, nothing else.
+- `src/commands/<verb>.rs` - one file per command, each exposing `run`.
+- Domain modules at the top level: `repo` (the `.stowe/` on disk), `model` (commits, entries, manifests), `scan` (walking and fingerprinting the tree), `mirror` (playable remotes), `remote` (locating a remote and making it reachable), `names` (portability and the rename fixes), `ignore` (`.stoweignore`), `audio` (fingerprinting), `prompt` (yes/no questions), `time` (commit timestamps), `selfcmd` (`stowe self`).
+- There is no `tui/` or `ui/`: stowe has no interactive screen.
+
 `stowe` is a Rust CLI on crates.io: git for the files git chokes on (music, photos, video, datasets). Content-addressed, linear history (one `main`, no branches, no content diffs). A remote is either a **mirror** (real playable folders on a drive/phone, bookkeeping hidden in a `.stowe/` beside them) or a **backup** (deduped blobs, e.g. S3). Local remotes default to mirror, s3 to backup; `--format` overrides, `convert` flips a remote in place. AGPL-3.0-only.
 
 ## Self-repair
