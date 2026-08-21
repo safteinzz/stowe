@@ -6,6 +6,7 @@
 
 mod audio;
 mod commands;
+mod diff;
 mod ignore;
 mod mirror;
 mod model;

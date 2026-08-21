@@ -72,7 +72,11 @@ pub fn rel_path(root: &std::path::Path, abs: &std::path::Path) -> String {
 /// Build a single manifest [`Entry`] for an existing file (used by per-file
 /// `add`). `fingerprint` decodes audio to record its fingerprint, same as a
 /// full scan.
-pub fn entry_for(root: &std::path::Path, abs: &std::path::Path, fingerprint: bool) -> Result<Entry> {
+pub fn entry_for(
+    root: &std::path::Path,
+    abs: &std::path::Path,
+    fingerprint: bool,
+) -> Result<Entry> {
     let meta = std::fs::metadata(abs)?;
     let mtime = meta
         .modified()?
@@ -250,7 +254,11 @@ pub fn scan(repo: &Repo, cache_source: &Manifest, fingerprint: bool) -> Result<M
                     };
                     let n = hashed.fetch_add(1, Ordering::Relaxed) + 1;
                     if n.is_multiple_of(256) {
-                        let what = if fingerprint { "hashing + fingerprinting" } else { "hashing" };
+                        let what = if fingerprint {
+                            "hashing + fingerprinting"
+                        } else {
+                            "hashing"
+                        };
                         prog.tick(&format!("{what}... {n} files"));
                     }
                     (hash, fp)
@@ -304,10 +312,8 @@ impl Diff {
 /// disappeared path), so duplicate content and several simultaneous moves are
 /// handled instead of collapsing to a single representative path.
 pub fn diff(old: &Manifest, new: &Manifest) -> Diff {
-    let old_by_path: HashMap<&str, &Entry> =
-        old.iter().map(|e| (e.path.as_str(), e)).collect();
-    let new_by_path: HashMap<&str, &Entry> =
-        new.iter().map(|e| (e.path.as_str(), e)).collect();
+    let old_by_path: HashMap<&str, &Entry> = old.iter().map(|e| (e.path.as_str(), e)).collect();
+    let new_by_path: HashMap<&str, &Entry> = new.iter().map(|e| (e.path.as_str(), e)).collect();
 
     let mut d = Diff::default();
 
@@ -356,7 +362,10 @@ pub fn diff(old: &Manifest, new: &Manifest) -> Diff {
     // Pass 1: exact-content moves (hash). Pass 2: same-audio moves (fp), only
     // for what's left - so a perfect content match always wins over an fp one.
     for (gi, g) in gone.iter().enumerate() {
-        if let Some(fi) = by_hash.get_mut(g.hash.as_str()).and_then(|q| claim(q, &taken)) {
+        if let Some(fi) = by_hash
+            .get_mut(g.hash.as_str())
+            .and_then(|q| claim(q, &taken))
+        {
             taken[fi] = true;
             claimed[gi] = true;
             d.moved.push((g.path.clone(), fresh[fi].path.clone()));
@@ -415,15 +424,48 @@ pub fn print_status(staged: &Diff, unstaged: &Diff, summary: &Diff) {
     let deleted = |s: String| s.red();
     let renamed = |s: String| s.blue();
 
+    // A path with the changed characters blocked out: red for what the rename
+    // took away, green for what it added, and the rest in the blue every other
+    // rename line uses.
+    // The name that goes is dimmed and the name that arrives keeps the blue,
+    // so the two lines of a rename are told apart by weight as well as by the
+    // arrow. Stacked pairs run together otherwise.
+    let marked = |text: &str, kept: &[bool], added: bool| -> String {
+        let mut out = String::new();
+        for (i, ch) in text.chars().enumerate() {
+            let cell = ch.to_string();
+            if kept.get(i).copied().unwrap_or(false) {
+                out.push_str(&if added { cell.blue() } else { cell.dimmed() }.to_string());
+            } else if added {
+                out.push_str(&cell.black().on_green().bold().to_string());
+            } else {
+                out.push_str(&cell.black().on_red().bold().to_string());
+            }
+        }
+        out
+    };
+
     // `label: path`, indented and padded like git.
     let line = |label: &str, text: &str, paint: &dyn Fn(String) -> colored::ColoredString| {
         println!("        {}", paint(format!("{label:<12}{text}")));
     };
     // Renames carry two long names, so split them over two aligned lines (the
     // new path under the old) instead of one wrapping `old -> new`.
+    //
+    // Only the characters that actually changed are marked, so the difference
+    // between two near identical paths is visible without reading both.
     let rename = |from: &str, to: &str| {
-        println!("        {}", renamed(format!("{:<12}{from}", "renamed:")));
-        println!("        {}", renamed(format!("         -> {to}")));
+        let (kept_from, kept_to) = crate::diff::common(from, to);
+        println!(
+            "        {}{}",
+            renamed(format!("{:<12}", "renamed:")),
+            marked(from, &kept_from, false)
+        );
+        println!(
+            "        {}{}",
+            renamed("         -> ".to_string()),
+            marked(to, &kept_to, true)
+        );
     };
 
     // Group order: deleted → modified → renamed → new (destructive first,
@@ -446,7 +488,10 @@ pub fn print_status(staged: &Diff, unstaged: &Diff, summary: &Diff) {
 
     if unstaged_changes {
         println!("\nChanges not staged for commit:");
-        println!("  {}", "(use \"stowe add <file>...\" to stage changes)".dimmed());
+        println!(
+            "  {}",
+            "(use \"stowe add <file>...\" to stage changes)".dimmed()
+        );
         for p in &unstaged.removed {
             line("deleted:", p, &deleted);
         }
@@ -460,7 +505,10 @@ pub fn print_status(staged: &Diff, unstaged: &Diff, summary: &Diff) {
 
     if !unstaged.added.is_empty() {
         println!("\nUntracked files:");
-        println!("  {}", "(use \"stowe add <file>...\" to include in commit)".dimmed());
+        println!(
+            "  {}",
+            "(use \"stowe add <file>...\" to include in commit)".dimmed()
+        );
         for p in &unstaged.added {
             println!("        {}", added(p.clone()));
         }
@@ -489,7 +537,9 @@ pub fn print_diff(d: &Diff) -> bool {
         return false;
     }
 
-    let group = |title: colored::ColoredString, items: &[String], paint: &dyn Fn(&str) -> colored::ColoredString| {
+    let group = |title: colored::ColoredString,
+                 items: &[String],
+                 paint: &dyn Fn(&str) -> colored::ColoredString| {
         if items.is_empty() {
             return;
         }
@@ -499,8 +549,12 @@ pub fn print_diff(d: &Diff) -> bool {
         }
     };
 
-    group("added".green().bold(), &d.added, &|s| format!("+ {s}").green());
-    group("removed".red().bold(), &d.removed, &|s| format!("- {s}").red());
+    group("added".green().bold(), &d.added, &|s| {
+        format!("+ {s}").green()
+    });
+    group("removed".red().bold(), &d.removed, &|s| {
+        format!("- {s}").red()
+    });
     group("modified".yellow().bold(), &d.modified, &|s| {
         format!("~ {s}").yellow()
     });
@@ -554,8 +608,16 @@ mod tests {
 
     #[test]
     fn added_removed_and_modified_are_classified() {
-        let old = vec![e("keep.mp3", "h1"), e("gone.mp3", "h2"), e("edit.mp3", "h3")];
-        let new = vec![e("keep.mp3", "h1"), e("edit.mp3", "CHANGED"), e("new.mp3", "h4")];
+        let old = vec![
+            e("keep.mp3", "h1"),
+            e("gone.mp3", "h2"),
+            e("edit.mp3", "h3"),
+        ];
+        let new = vec![
+            e("keep.mp3", "h1"),
+            e("edit.mp3", "CHANGED"),
+            e("new.mp3", "h4"),
+        ];
         let d = diff(&old, &new);
         assert_eq!(d.added, ["new.mp3"]);
         assert_eq!(d.removed, ["gone.mp3"]);
