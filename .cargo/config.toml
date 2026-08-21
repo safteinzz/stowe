@@ -1,0 +1,5 @@
+# `cargo clippy-all` is the lint pass. A bare `cargo clippy` only sees the lib
+# and the bin, so it reports clean while skipping `tests/` and `examples/`, and
+# it warns where a release wants a failure.
+[alias]
+clippy-all = "clippy --release --all-targets -- -D warnings"
