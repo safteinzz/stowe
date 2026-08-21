@@ -140,3 +140,20 @@ fn confirm() -> bool {
     }
     matches!(input.trim().to_lowercase().as_str(), "y" | "yes")
 }
+
+#[cfg(test)]
+mod tests {
+    use super::newer;
+
+    /// The check compares field by field, because a plain string compare puts
+    /// `0.9.9` above `0.10.0` and would tell everyone they are up to date.
+    #[test]
+    fn a_newer_release_is_recognised_field_by_field() {
+        assert!(newer("0.10.0", "0.9.9"));
+        assert!(newer("1.0.0", "0.9.9"));
+        assert!(newer("0.4.2", "0.4.1"));
+        assert!(!newer("0.4.1", "0.4.1"));
+        assert!(!newer("0.4.0", "0.4.1"));
+        assert!(!newer("0.9.9", "0.10.0"));
+    }
+}
