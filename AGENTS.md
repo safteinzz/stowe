@@ -1,15 +1,25 @@
 <!--
-AI-ONLY DOCUMENT. This file exists to give an AI agent the COMPLETE operating picture for this repo. Optimize for completeness and precision for the agent, not for human readability. Humans read README.md instead. Do not remove detail to make this nicer — err toward more explicit, not less. FORMAT: machine-read, not a formatted human doc. Do NOT hard-wrap lines to a column width for readability; put each rule/point on ONE line, however long.
+AI-ONLY DOCUMENT. This file exists to give an AI agent the COMPLETE operating picture for this repo. Optimize for completeness and precision for the agent, not for human readability. Humans read README.md instead. Do not remove detail to make this nicer, err toward more explicit, not less. FORMAT: machine-read, not a formatted human doc. Do NOT hard-wrap lines to a column width for readability; put each rule/point on ONE line, however long.
 -->
 # AGENTS.md
 
+Working brief for an AI coding agent, not documentation for people (the README covers that): the rules, invariants and gotchas needed to change this project correctly without rediscovering them.
+
 ## Hard rules
-- **Commit only when the user says ship.** Commits go in once the changes are tested, which is normally right when they're about to ship; never as a mid-work checkpoint.
-- Release flow, in this exact order: `cargo clippy` warning-clean + `cargo test` green → bump `version` in `Cargo.toml` → one commit (short conventional message, never co-authored) → `git push origin main` → `cargo publish` (dry-run first; publishing is irreversible) → **tag only after publish succeeds**: `git tag vX.Y.Z && git push origin --tags`. A tag must never point at a version that failed to publish.
-- Fix the root cause. If a workaround must ship, say the word "workaround" out loud, so a silent patch never passes as a real fix. Same for lints: never `#[allow]` a warning away; delete or fix the code it points at.
-- **Never test against real user data.** Use throwaway scratch dirs and the release binary, never the real library or an external local copy; don't reinstall to test.
-- **No em-dashes** anywhere user-facing (README, --help, crate description, commit messages, prose) - they read as AI-generated text.
-- Every bug fix gets a test - throwaway bash checks let real regressions through; that's why tests/cli.rs exists.
+- Commit, push, and publish only when the user says to ship; a mid-work commit is never the deliverable, because the user tests interactively first.
+- Commit messages are short single-line conventional ones (`feat:`, `fix:`, `chore:`, ...), never with a `Co-Authored-By` trailer and never with a verbose body.
+- Release flow, in this exact order: write the regression tests for what is about to ship -> bump `version` in `Cargo.toml` -> `cargo clippy-all` clean and `cargo test` green, which is also what refreshes `Cargo.lock` with the new version -> one commit -> `git push origin main` -> `cargo publish` (dry-run first, publishing is irreversible) -> tag only after publish succeeds with `git tag vX.Y.Z && git push origin --tags`; a tag must never point at a version that failed to publish, and the bump comes first because `cargo publish` fails on a `Cargo.lock` that still holds the old version.
+- Tests are written at ship time and only then: covering the behaviour that just settled is the first step of the release flow, so the suite grows once per release instead of once per commit.
+- Never write a test for behaviour that has not shipped yet, because code that is not in the last release tag is still being designed, and a test pinning a shape that is about to change is how a suite starts lying.
+- A test may only assert something the README or `--help` promises, or a pure-logic invariant (parsing, generation, path resolution, validation); never the shape of a private function and never the specific diff that was just made, since those rot on the next refactor and teach nothing about whether the program works.
+- Removing a promise from the README removes its tests in the same commit.
+- A test may only write inside a temp directory it deletes, never a real config, data, cache or content directory and never a fixed path, so a machine is left exactly as it was before the suite ran.
+- Never drive the interface to test it: build it, say what changed and what to look at, and let the user run it, because they see the screen instantly while an agent driving a pty or a tmux pane is slow and wrong about what it looks like; logic that is not visual can still be checked directly from `tests/`.
+- Never `cargo install` to test: run the release binary at `./target/release/stowe` directly, because installing replaces the binary on PATH with a work-in-progress build; install only when the user asks.
+- `main` is protected: no force-push and no history rewrite, so a mistake is fixed with a forward commit.
+- No em-dashes anywhere (code, comments, README, `--help`, crate description, commit messages, prose), because they read as AI-generated text; use `-` instead.
+- Fix the root cause, and if a workaround must ship say the word "workaround" out loud so a silent patch never passes as a real fix; the same goes for lints, where an `#[allow]` is never the answer and the code it points at gets fixed or deleted.
+- `TODO-LIST.md` (gitignored) holds one-line ideas, and the line is deleted when the idea ships.
 - Linux-first; Windows deliberately unsupported until it can actually be tested on Windows.
 
 ## Invariants and gotchas
@@ -24,12 +34,14 @@ AI-ONLY DOCUMENT. This file exists to give an AI agent the COMPLETE operating pi
 - tokio stays quarantined in the object-store remote code; the rest of the program is synchronous by design.
 - Known, accepted bug: mtime is cached at whole-second resolution, so a same-size in-place edit within one second is missed.
 
-## Build / test (verified)
-    cargo build --release       # binary at target/release/stowe
-    cargo test                  # unit tests in src files + end-to-end in tests/cli.rs
+## Build / lint / test
+- `cargo build --release`, binary at `target/release/stowe`.
+- `cargo clippy-all` is the lint pass, aliased in `.cargo/config.toml` to `clippy --release --all-targets -- -D warnings`; use it rather than a bare `cargo clippy`, which skips `tests/` and `examples/` and only warns where the release flow wants a failure.
+- `cargo test`.
+- Unit tests sit in the source files, end-to-end tests in `tests/cli.rs`.
 
 ## Overview
 `stowe` is a Rust CLI on crates.io: git for the files git chokes on (music, photos, video, datasets). Content-addressed, linear history (one `main`, no branches, no content diffs). A remote is either a **mirror** (real playable folders on a drive/phone, bookkeeping hidden in a `.stowe/` beside them) or a **backup** (deduped blobs, e.g. S3). Local remotes default to mirror, s3 to backup; `--format` overrides, `convert` flips a remote in place. AGPL-3.0-only.
 
 ## Self-repair
-If anything here contradicts the code, the code wins - fix this file in the same session you notice the drift.
+If anything here contradicts the code, the code wins; fix AGENTS.md in the same session you notice the drift.

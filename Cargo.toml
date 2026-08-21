@@ -2,6 +2,7 @@
 name = "stowe"
 version = "0.3.2"
 edition = "2024"
+rust-version = "1.87"
 description = "where git chokes, stowe stows - versioned, deduped big and binary files, pushed to backups you can still play (mirror) or compact blob stores (S3)"
 authors = ["Pablo Antonio Hernández Hernández (safteinzz)"]
 license = "AGPL-3.0-only"
@@ -9,8 +10,8 @@ repository = "https://gitlab.com/safteinzz/stowe"
 readme = "README.md"
 keywords = ["backup", "version-control", "vcs", "dedup", "files"]
 categories = ["command-line-utilities", "filesystem"]
-# Screenshots are fetched over the network by crates.io, never read out of the
-# package, so shipping them would only bloat every download.
+# README screenshots are fetched over the network by crates.io via absolute raw
+# URLs, never read out of the package, so shipping them would only bloat every download.
 exclude = ["readme-assets/"]
 
 [dependencies]
