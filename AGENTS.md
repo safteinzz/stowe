@@ -20,6 +20,7 @@ Working brief for an AI coding agent, not documentation for people (the README c
 - No em-dashes anywhere (code, comments, README, `--help`, crate description, commit messages, prose), because they read as AI-generated text; use `-` instead.
 - Fix the root cause, and if a workaround must ship say the word "workaround" out loud so a silent patch never passes as a real fix; the same goes for lints, where an `#[allow]` is never the answer and the code it points at gets fixed or deleted.
 - `TODO-LIST.md` (gitignored) holds one-line ideas, and the line is deleted when the idea ships.
+- `.nocommit/` (gitignored) holds reference material used only to inform work here - other projects, notes, drafts - and never ships; keep it out of anything user-facing (commit messages, code, comments, README, `--help`), since a reference to material nobody outside this machine can see means nothing to them and just clutters the record.
 - Linux-first; Windows deliberately unsupported until it can actually be tested on Windows.
 
 ## Invariants and gotchas

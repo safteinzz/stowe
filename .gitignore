@@ -7,3 +7,6 @@ GEMINI.md
 .cursor/
 .aider*
 .windsurfrules
+
+# Private reference material, never committed - see AGENTS.md
+/.nocommit
