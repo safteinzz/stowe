@@ -8,17 +8,25 @@ where git chokes, stowe stows - versioned, deduped big and binary files, pushed 
 
 ## Install
 
-```sh
+```bash
 cargo install stowe
+stowe self check   # is a newer release out?
+stowe self update  # install the latest
+```
 
+No cargo yet? Rust installs the same way on every distro: [rustup.rs](https://rustup.rs).
+
+![a terminal tour: a media archive is initialised, staged, committed and pushed to a drive as real folders, then two folders and a song are renamed and pushed again as moves rather than uploads, and a file dropped onto the drive by hand stops the next push until it is adopted](https://gitlab.com/safteinzz/stowe/-/raw/main/readme-assets/demo.gif)
+
+## Back up a folder
+
+```sh
 stowe init
 stowe add -A
 stowe commit -m "import"
 stowe remote add origin local:/mnt/drive
 stowe push
 ```
-
-![a terminal tour: a media archive is initialised, staged, committed and pushed to a drive as real folders, then two folders and a song are renamed and pushed again as moves rather than uploads, and a file dropped onto the drive by hand stops the next push until it is adopted](https://gitlab.com/safteinzz/stowe/-/raw/main/readme-assets/demo.gif)
 
 ## See what changed
 
@@ -101,7 +109,7 @@ second part matters: a phone's gallery recreates `.thumbnails/` every time it
 indexes the folder, and without this it would read as drift and demand `--force`
 on every single push.
 
-## Good to know
+## Notes
 
 - Renames and re-tagged audio are tracked as **moves**, not re-uploads. Audio is
   fingerprinted from the decoded signal, so a move survives a tag edit.
@@ -114,7 +122,11 @@ on every single push.
   `stowe restore --from <commit>` can reach back for them.
 - Names that are legal locally but unstorable on exFAT or NTFS are detected
   before the push, with a rename offered.
-- Linux-first. Windows is deliberately unsupported until it can be tested there.
+
+## Compatibility
+
+Linux. Windows is deliberately unsupported until it can actually be tested
+there.
 
 ## License
 
