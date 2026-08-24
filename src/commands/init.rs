@@ -7,6 +7,9 @@ use crate::repo::Repo;
 pub fn run() -> Result<()> {
     let cwd = std::env::current_dir()?;
     Repo::init(&cwd)?;
-    println!("initialized empty stowe repo in {}/.stowe", cwd.display());
+    println!(
+        "initialized empty stowe repo in {}/.stowe",
+        crate::paths::short(&cwd)
+    );
     Ok(())
 }

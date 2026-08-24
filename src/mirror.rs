@@ -34,15 +34,17 @@ use crate::scan;
 /// per-file latency on a network mirror, few enough not to thrash a USB drive.
 const COPY_CONCURRENCY: usize = 8;
 
-/// A `local:<path>` URL (or a bare path) → the mirror root. Returns `None` for
-/// non-local schemes (e.g. `s3://`), which use the object-store format instead.
+/// A `local:<path>` URL (or a bare path) → the mirror root. A leading `~` is
+/// expanded, so a remote can be typed (and stored) the way it is printed back.
+/// Returns `None` for non-local schemes (e.g. `s3://`), which use the
+/// object-store format instead.
 pub fn local_root(url: &str) -> Option<PathBuf> {
     if let Some(p) = url.strip_prefix("local:") {
-        Some(PathBuf::from(p))
+        Some(crate::paths::expand(p))
     } else if url.contains("://") {
         None
     } else {
-        Some(PathBuf::from(url))
+        Some(crate::paths::expand(url))
     }
 }
 
@@ -107,7 +109,7 @@ pub fn sync(repo: &Repo, root: &Path, force: bool) -> Result<SyncReport> {
     let target: &Manifest = &history[0].1.files;
 
     std::fs::create_dir_all(dot(root).join("objects"))
-        .with_context(|| format!("creating mirror at {}", root.display()))?;
+        .with_context(|| format!("creating mirror at {}", crate::paths::short(root)))?;
     std::fs::create_dir_all(dot(root).join("commits"))?;
 
     // The snapshot the mirror currently reflects (empty on a fresh mirror).
@@ -128,7 +130,7 @@ pub fn sync(repo: &Repo, root: &Path, force: bool) -> Result<SyncReport> {
         bail!(
             "mirror `{}` has changes made outside stowe - reconcile, or re-run with --force to \
              overwrite it to match this commit",
-            root.display()
+            crate::paths::short(root)
         );
     }
 
@@ -441,8 +443,12 @@ pub struct PullReport {
 /// the working tree from the mirror's real files (falling back to preserved
 /// versions in `.stowe/objects/` if a current file is somehow missing).
 pub fn pull(repo: &Repo, root: &Path) -> Result<PullReport> {
-    let remote_head = read_ref(root)?
-        .ok_or_else(|| anyhow!("mirror `{}` is empty - nothing to pull", root.display()))?;
+    let remote_head = read_ref(root)?.ok_or_else(|| {
+        anyhow!(
+            "mirror `{}` is empty - nothing to pull",
+            crate::paths::short(root)
+        )
+    })?;
 
     // Copy down the commit chain metadata we don't already have.
     let mut new_commits = 0;

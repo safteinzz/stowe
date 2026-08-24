@@ -11,6 +11,7 @@ mod ignore;
 mod mirror;
 mod model;
 mod names;
+mod paths;
 mod prompt;
 mod remote;
 mod repo;

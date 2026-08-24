@@ -10,3 +10,9 @@ GEMINI.md
 
 # Private reference material, never committed - see AGENTS.md
 /.nocommit
+
+# The demo rig's scratch: the staged home it builds, which holds the shim that
+# puts this build on PATH and the rc it feeds the staged shell too. The tapes
+# are committed, what they produce is not.
+/demo/home
+/demo/.env

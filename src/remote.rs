@@ -252,7 +252,7 @@ pub(crate) fn ensure_reachable(
             bail!(
                 "`{name}`: the mount command succeeded, but {} is still on your local disk. \
                  Refusing to write there - the drive would be backed up to the wrong place.",
-                root.display()
+                crate::paths::short(&root)
             );
         }
     }
@@ -265,14 +265,14 @@ pub(crate) fn ensure_reachable(
         bail!(
             "remote `{name}` ({}) has been pushed to before, but isn't there now. \
              Is the drive connected? (refusing to recreate it)",
-            root.display()
+            crate::paths::short(&root)
         );
     }
 
     if !remote_reachable(url) {
         bail!(
             "remote `{name}` ({}) isn't reachable. Is the drive connected?",
-            root.display()
+            crate::paths::short(&root)
         );
     }
     Ok(())

@@ -12,7 +12,8 @@ keywords = ["backup", "version-control", "vcs", "dedup", "files"]
 categories = ["command-line-utilities", "filesystem"]
 # README screenshots are fetched over the network by crates.io via absolute raw
 # URLs, never read out of the package, so shipping them would only bloat every download.
-exclude = ["readme-assets/"]
+# `demo/` is the rig that renders them: a contributor's tool, useless at install time.
+exclude = ["readme-assets/", "demo/"]
 
 [dependencies]
 anyhow     = "1"                                           # error handling

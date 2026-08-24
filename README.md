@@ -6,6 +6,8 @@
 where git chokes, stowe stows - versioned, deduped big and binary files, pushed to backups you can still play (mirror) or compact blob stores (S3)
 <!-- desc:end -->
 
+## Install
+
 ```sh
 cargo install stowe
 
@@ -16,19 +18,19 @@ stowe remote add origin local:/mnt/drive
 stowe push
 ```
 
+![a terminal tour: a media archive is initialised, staged, committed and pushed to a drive as real folders, then two folders and a song are renamed and pushed again as moves rather than uploads, and a file dropped onto the drive by hand stops the next push until it is adopted](https://gitlab.com/safteinzz/stowe/-/raw/main/readme-assets/demo.gif)
+
 ## See what changed
 
 Move a folder, rename a file, drop new ones in. stowe works out what actually
-happened instead of reporting a wall of deletes and adds.
+happened instead of reporting a wall of deletes and adds, and marks only the
+characters that changed.
 
-![stowe status showing six files detected as renames after two folders were moved, two untracked files, and a summary line reading +2 -0 ~0 and 6 moved](https://gitlab.com/safteinzz/stowe/-/raw/main/readme-assets/status.png)
-
-The summary counts new, deleted, changed, and moved. Six files changed folder
-here and not one of them counts as new.
+![stowe status after two folders were moved and a song retitled: six renames, each with the changed characters highlighted, two untracked files, and a summary line reading +2 -0 ~0 and 6 moved](https://gitlab.com/safteinzz/stowe/-/raw/main/readme-assets/status.png)
 
 ## Commit and back it up
 
-![stowe add -A, stowe commit and stowe push drive run in sequence, ending in a report reading plus 2 new, 0 changed, 6 moved, 0 removed](https://gitlab.com/safteinzz/stowe/-/raw/main/readme-assets/push.png)
+![stowe commit followed by stowe push drive, ending in a report reading plus 2 new, 0 changed, 6 moved, 0 removed](https://gitlab.com/safteinzz/stowe/-/raw/main/readme-assets/push.png)
 
 `+2 new, ~0 changed, ⇄6 moved` is the point: the six relocated files were
 renamed in place on the drive. Only the two genuinely new files crossed the
@@ -36,7 +38,7 @@ wire. Reorganising a terabyte archive stays cheap.
 
 ## The backup is just your files
 
-![ls -la of the mirror showing Datasets, Photos, Renders and Video directories alongside a hidden .stowe directory](https://gitlab.com/safteinzz/stowe/-/raw/main/readme-assets/mirror.png)
+![ls -la of the mirror showing Datasets, Music, Photos, Renders and Video directories alongside a hidden .stowe directory](https://gitlab.com/safteinzz/stowe/-/raw/main/readme-assets/mirror.png)
 
 A mirror is your real tree at real paths. Plug the drive into anything, open the
 folders, play or edit what is inside. The history lives in `.stowe/` beside it,
@@ -44,7 +46,7 @@ so one drive is both a working copy and a time machine.
 
 ## Two shapes of remote
 
-![stowe remote listing a drive remote marked mirror and an offsite s3 remote marked backup](https://gitlab.com/safteinzz/stowe/-/raw/main/readme-assets/remote.png)
+![two stowe remote add commands, one for a local drive and one for an s3 bucket with --format backup, then stowe remote listing the drive as mirror and the offsite bucket as backup](https://gitlab.com/safteinzz/stowe/-/raw/main/readme-assets/remote.png)
 
 - **mirror** (`local:`): real, browsable folders on a drive or phone.
 - **backup** (`s3://`, or `--format backup`): deduped content-addressed blobs.
@@ -55,11 +57,10 @@ flips a remote between the two **in place**, no re-upload.
 
 ## It will not overwrite what it did not put there
 
-![stowe push halting with a report that the mirror was changed outside stowe, listing one file added on the mirror, and an error telling you to reconcile or use --force](https://gitlab.com/safteinzz/stowe/-/raw/main/readme-assets/drift.png)
+![a file copied onto the mirror by hand, then stowe push halting with a report that the mirror was changed outside stowe and an error telling you to reconcile or use --force, then stowe adapt taking that file into the working tree](https://gitlab.com/safteinzz/stowe/-/raw/main/readme-assets/drift.png)
 
-If a remote changed behind stowe's back, the push stops and tells you what it
-found. Nothing is written until you decide: `stowe adapt` pulls those changes
-back into the repo, `--force` overwrites them.
+Nothing is written until you decide: `stowe adapt` pulls those changes back into
+the repo, `--force` overwrites them.
 
 ## Commands
 

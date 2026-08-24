@@ -68,9 +68,7 @@ pub fn run(cmd: Option<RemoteCmd>) -> Result<()> {
             // (you may be adding it ahead of connecting, so default is yes).
             // With a mount command we already know how to reach it, so no prompt.
             if !remote_reachable(&url) && mount.is_none() {
-                let shown = mirror::local_root(&url)
-                    .map(|r| r.display().to_string())
-                    .unwrap_or_else(|| url.clone());
+                let shown = crate::paths::short_url(&url);
                 if !confirm_default_yes(&format!(
                     "remote `{name}` ({shown}) isn't reachable right now. Add it anyway?"
                 )) {
@@ -81,7 +79,8 @@ pub fn run(cmd: Option<RemoteCmd>) -> Result<()> {
             cfg.remotes.insert(name.clone(), url.clone());
             repo.save_config(&cfg)?;
             println!(
-                "remote `{name}` -> {url} ({} format)",
+                "remote `{name}` -> {} ({} format)",
+                crate::paths::short_url(&url),
                 remote_format(&cfg, &name, &url).name()
             );
             if let Some(cmd) = &mount {
@@ -96,7 +95,11 @@ pub fn run(cmd: Option<RemoteCmd>) -> Result<()> {
                 println!("  stowe remote add origin local:/path/to/backup");
             }
             for (name, url) in &cfg.remotes {
-                println!("{name}\t{url}\t[{}]", remote_format(&cfg, name, url).name());
+                println!(
+                    "{name}\t{}\t[{}]",
+                    crate::paths::short_url(url),
+                    remote_format(&cfg, name, url).name()
+                );
                 if let Some(cmd) = cfg.mounts.get(name) {
                     println!("  mount: {cmd}");
                 }
