@@ -186,11 +186,9 @@ pub fn sync(repo: &Repo, root: &Path, force: bool) -> Result<SyncReport> {
     for path in &d.added {
         copies.push((path, root.join(path)));
     }
-    // 5. Repair. The plan so far is a diff of two *manifests*, which is blind to
-    //    the mirror's real state: a file deleted or truncated on the drive still
-    //    "matches" between snapshots, so it would never be re-copied, leaving the
-    //    mirror claiming a file it no longer has (and breaking a later `pull`).
-    //    So bring back anything the target wants that isn't actually there.
+    // 5. Repair. The plan so far is a diff of two manifests, which is blind to the
+    // mirror's real state: a file deleted or truncated on the drive still matches
+    // between snapshots, so bring back anything the target wants and does not have.
     let queued: HashSet<&str> = copies.iter().map(|(p, _)| p.as_str()).collect();
     let repairs: Vec<&String> = target
         .iter()

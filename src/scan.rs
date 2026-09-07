@@ -234,11 +234,9 @@ pub fn scan(repo: &Repo, cache_source: &Manifest, fingerprint: bool) -> Result<M
     let ignore = Ignore::load(&repo.root);
     collect_files(&repo.root, &repo.root, &mut found, &prog, &ignore)?;
 
-    // Content hashing *is* worth parallelising (CPU-bound, per-file independent),
-    // so fan it across cores. A cache hit (unchanged size+mtime) reuses the
-    // stored hash/fingerprint and reads no content - so a clean tree does no I/O
-    // here at all. `hashed` counts only the files we actually read, which is the
-    // slow work worth reporting (a re-`add` of a big library, cold cache, etc.).
+    // Hashing is CPU-bound and per-file independent, so fan it across cores. A
+    // cache hit (unchanged size+mtime) reads no content, so a clean tree does no
+    // I/O here; `hashed` counts only the files actually read.
     let hashed = AtomicUsize::new(0);
     let mut out: Manifest = found
         .par_iter()
@@ -424,12 +422,9 @@ pub fn print_status(staged: &Diff, unstaged: &Diff, summary: &Diff) {
     let deleted = |s: String| s.red();
     let renamed = |s: String| s.blue();
 
-    // A path with the changed characters blocked out: red for what the rename
-    // took away, green for what it added, and the rest in the blue every other
-    // rename line uses.
-    // The name that goes is dimmed and the name that arrives keeps the blue,
-    // so the two lines of a rename are told apart by weight as well as by the
-    // arrow. Stacked pairs run together otherwise.
+    // Red for what the rename took away, green for what it added, the rest in the
+    // blue every rename line uses. The old name is dimmed so the two lines of a
+    // rename are told apart by weight as well as by the arrow.
     let marked = |text: &str, kept: &[bool], added: bool| -> String {
         let mut out = String::new();
         for (i, ch) in text.chars().enumerate() {
@@ -449,11 +444,8 @@ pub fn print_status(staged: &Diff, unstaged: &Diff, summary: &Diff) {
     let line = |label: &str, text: &str, paint: &dyn Fn(String) -> colored::ColoredString| {
         println!("        {}", paint(format!("{label:<12}{text}")));
     };
-    // Renames carry two long names, so split them over two aligned lines (the
-    // new path under the old) instead of one wrapping `old -> new`.
-    //
-    // Only the characters that actually changed are marked, so the difference
-    // between two near identical paths is visible without reading both.
+    // Two long names, so the new path goes under the old rather than wrapping one
+    // `old -> new`, with only the changed characters marked.
     let rename = |from: &str, to: &str| {
         let (kept_from, kept_to) = crate::diff::common(from, to);
         println!(
