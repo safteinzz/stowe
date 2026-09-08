@@ -11,9 +11,13 @@ use crate::repo::Repo;
 
 #[derive(Subcommand)]
 pub enum RemoteCmd {
-    /// Add or update a named remote: `stowe remote add origin local:/path`.
+    /// Add or update a named remote  <NAME> <URL>
+    ///   stowe remote add origin local:/path
+    #[command(verbatim_doc_comment)]
     Add {
+        /// What to call it here, `origin` unless you have more than one
         name: String,
+        /// Where it lives: a path, `local:/path`, or `s3://bucket/prefix`
         url: String,
         /// On-disk format: `mirror` (playable, local only) or `backup` (blobs).
         /// Omit to use the scheme default (local → mirror, s3 → backup).
@@ -25,7 +29,7 @@ pub enum RemoteCmd {
         #[arg(long)]
         mount: Option<String>,
     },
-    /// List configured remotes.
+    /// List configured remotes
     List,
 }
 

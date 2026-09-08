@@ -24,9 +24,11 @@ use clap::{Parser, Subcommand};
 
 use commands::remote::RemoteCmd;
 
-/// Shown at the bottom of `stowe --help`: the one distinction the command list
-/// can't convey - that a remote is either a playable mirror or a blob backup.
-const REMOTES_NOTE: &str = concat!(
+/// Shown at the bottom of `stowe --help`: the distinctions the command list
+/// can't convey - that a remote is either a playable mirror or a blob backup,
+/// and which paths every scan skips - and then what a script can expect from
+/// stdout.
+const AFTER: &str = concat!(
     "Every remote is one of two shapes:
   mirror   real, playable folders - a drive or phone you can browse & play
   backup   deduped content-addressed blobs - S3, or a space-saving archive
@@ -35,7 +37,10 @@ Local remotes default to mirror, s3:// to backup; set it with `remote add --form
 A `.stoweignore` at the repo root keeps paths out of every scan, local and
 remote: bare names match anywhere, a trailing `/` means directories only, and a
 pattern with a `/` is anchored at the root.
-Run `stowe <command> --help` for the full detail of any command.",
+
+Every command prints for people rather than for a pipe, and a failure names
+itself on stderr and exits non-zero.
+Run `stowe <command> --help` for a command's details.",
     "\n\n",
     env!("CARGO_PKG_REPOSITORY"),
     "\ncontributors: ",
@@ -61,7 +66,7 @@ const LONG_VERSION: &str = concat!(
     version,
     long_version = LONG_VERSION,
     about,
-    after_help = REMOTES_NOTE,
+    after_help = AFTER,
     arg_required_else_help = true
 )]
 struct Cli {
@@ -75,8 +80,8 @@ enum Cmd {
     Init,
     /// Show what changed since the last commit
     Status,
-    /// Stage files for the next commit  <paths...>
-    ///   -A          stage the entire working tree
+    /// Stage files for the next commit  [PATHS]...
+    ///   -A                        stage the entire working tree
     #[command(verbatim_doc_comment)]
     Add {
         /// Files or directories to stage. Omit and pass `-A` to stage the whole tree.
@@ -87,19 +92,20 @@ enum Cmd {
     },
     /// Discard the staging index (working tree untouched)
     Unstage,
-    /// Record the staged snapshot as a commit
-    ///   -m MSG      commit message
+    /// Record the staged snapshot as a commit  --message <MESSAGE>
     #[command(verbatim_doc_comment)]
     Commit {
+        /// What this snapshot is, one line, shown by `stowe log`
         #[arg(short = 'm', long)]
         message: String,
     },
     /// Show commit history (newest first)
     Log,
     /// Manage remotes - no subcommand lists them
-    ///   add NAME URL            add or update a remote
-    ///     --format mirror|backup   on-disk shape (default: local→mirror)
-    ///     --mount CMD              command that mounts it, run when unreachable
+    ///   remote add <NAME> <URL>   add or update a remote
+    ///     --format mirror|backup  on-disk shape (default: local -> mirror)
+    ///     --mount CMD             command that mounts it, run when unreachable
+    ///   remote list               list them, the same as bare `remote`
     #[command(verbatim_doc_comment)]
     Remote {
         /// Accepted for git muscle memory; stowe always shows URLs anyway.
@@ -108,8 +114,8 @@ enum Cmd {
         #[command(subcommand)]
         cmd: Option<RemoteCmd>,
     },
-    /// Sync remote(s) to the latest commit  [remotes...]
-    ///   --force     overwrite by-hand changes on a mirror
+    /// Sync remote(s) to the latest commit  [REMOTES]...
+    ///   --force                   overwrite by-hand changes on a mirror
     #[command(verbatim_doc_comment)]
     Push {
         /// Remotes to push to. Omit for `origin`; list several to fan out.
@@ -118,21 +124,22 @@ enum Cmd {
         #[arg(long)]
         force: bool,
     },
-    /// Rebuild the working tree from a remote  [remote]
+    /// Rebuild the working tree from a remote  [REMOTE]
     Pull {
+        /// The remote to rebuild from (default: origin)
         #[arg(default_value = "origin")]
         remote: String,
     },
-    /// Pull a mirror's by-hand changes into local (remote ➜ local)  [remote]
+    /// Pull a mirror's by-hand changes into local (remote -> local)  [REMOTE]
     Adapt {
         /// The mirror remote to adopt changes from (default: origin).
         #[arg(default_value = "origin")]
         remote: String,
     },
-    /// Recover committed file(s) from a remote  <paths...>
-    ///   -A          restore the whole snapshot
-    ///   --from C    the version from commit C (else HEAD)
-    ///   --remote R  which remote to fetch from (default: origin)
+    /// Recover committed file(s) from a remote  [PATHS]...
+    ///   -A                        restore the whole snapshot
+    ///   --from C                  the version from commit C (else HEAD)
+    ///   --remote R                which remote to fetch from (default: origin)
     #[command(verbatim_doc_comment)]
     Restore {
         /// Files to restore. Omit and pass `-A` for the whole snapshot.
@@ -148,8 +155,8 @@ enum Cmd {
         #[arg(long, default_value = "origin")]
         remote: String,
     },
-    /// Flip a remote between mirror and backup, in place  [remote]
-    ///   --to mirror|backup   target format (omit to flip)
+    /// Flip a remote between mirror and backup, in place  [REMOTE]
+    ///   --to mirror|backup        target format (omit to flip)
     #[command(verbatim_doc_comment)]
     Convert {
         /// The remote to convert (default: origin).
@@ -159,10 +166,8 @@ enum Cmd {
         #[arg(long, value_parser = ["mirror", "backup"])]
         to: Option<String>,
     },
-    /// Manage stowe itself
-    ///   update      reinstall the latest release   -y skips the prompt
-    ///   check       is a newer release out? (installs nothing)
-    #[command(name = "self", subcommand, verbatim_doc_comment)]
+    /// Manage stowe itself: `self update` reinstalls, `self check` looks for a newer release
+    #[command(name = "self", subcommand)]
     Selfie(selfcmd::Cmd),
 }
 
