@@ -5,8 +5,6 @@ AI-ONLY DOCUMENT. This file exists to give an AI agent the COMPLETE operating pi
 
 Working brief for an AI coding agent, not documentation for people (the README covers that): the rules, invariants and gotchas needed to change this project correctly without rediscovering them.
 
-**What does not belong here.** How to write code - comments, tests, error wording, how to answer, when to commit - is not project knowledge: it comes from `~/dotfiles/development/MYRULES.md`, imported ahead of this file and outranking it. A rule that would be true in any repo is a sign it belongs there instead. Where the two genuinely contradict, ask rather than pick.
-
 ## Hard rules
 - Linux-first; Windows deliberately unsupported until it can actually be tested on Windows.
 
