@@ -26,7 +26,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 use crate::ignore::Ignore;
-use crate::model::{Commit, Entry, Manifest};
+use crate::model::{Commit, Entry, Manifest, short};
 use crate::repo::Repo;
 use crate::scan;
 
@@ -100,7 +100,8 @@ impl Drift {
     }
 }
 
-/// Sync the mirror at `root` to `repo`'s HEAD. `force` overwrites drift.
+/// Sync the mirror at `root` to `repo`'s HEAD. `force` overwrites drift, and a
+/// mirror whose history this repo doesn't have.
 pub fn sync(repo: &Repo, root: &Path, force: bool) -> Result<SyncReport> {
     let head = repo
         .head()?
@@ -111,27 +112,59 @@ pub fn sync(repo: &Repo, root: &Path, force: bool) -> Result<SyncReport> {
     std::fs::create_dir_all(dot(root).join("objects"))
         .with_context(|| format!("creating mirror at {}", crate::paths::short(root)))?;
     std::fs::create_dir_all(dot(root).join("commits"))?;
+    recover_tmp(root)?;
 
     // The snapshot the mirror currently reflects (empty on a fresh mirror).
-    let remote_manifest: Manifest = match read_ref(root)? {
-        Some(h) => read_commit_files(root, &h)?,
+    let recorded_head = read_ref(root)?;
+    if let Some(h) = &recorded_head
+        && !force
+        && !history.iter().any(|(c, _)| c == h)
+    {
+        bail!(
+            "mirror `{}` is at commit {}, which this repo doesn't have - `stowe pull` it first, \
+             or re-run with --force to replace its history with this one",
+            crate::paths::short(root),
+            short(h)
+        );
+    }
+    let remote_manifest: Manifest = match &recorded_head {
+        Some(h) => read_commit_files(root, h)?,
         None => Vec::new(),
     };
 
     // What's really on the mirror (one walk, reused below for repair).
-    let ignore = Ignore::load(&repo.root);
-    let actual = mirror_sizes(root, &ignore)?;
+    let ignore = Ignore::load(&repo.root).keeping(
+        remote_manifest
+            .iter()
+            .chain(target)
+            .map(|e| e.path.as_str()),
+    );
+    let mut actual = mirror_sizes(root, &ignore)?;
+    let folds = crate::names::probe_case_insensitive(root);
+    let dirs_on_disk = dir_spellings(&actual);
+    let spelled = if folds {
+        adopt_spellings(&mut actual, &remote_manifest)
+    } else {
+        Vec::new()
+    };
 
     // Did someone touch the mirror behind stowe's back, in a way this push would
     // clobber? Cheap check: paths + sizes, no hashing. Bail unless --force.
     let drift = detect_drift(&actual, &remote_manifest, target);
-    if !drift.is_empty() && !force {
-        drift.report();
-        bail!(
-            "mirror `{}` has changes made outside stowe - reconcile, or re-run with --force to \
-             overwrite it to match this commit",
-            crate::paths::short(root)
-        );
+    if !drift.is_empty() {
+        if !force {
+            drift.report();
+            bail!(
+                "mirror `{}` has changes made outside stowe - reconcile, or re-run with --force \
+                 to overwrite it to match this commit",
+                crate::paths::short(root)
+            );
+        }
+        for p in &drift.foreign {
+            remove_file_and_empty_dirs(root, &root.join(p))?;
+            actual.remove(p);
+            eprintln!("removed from mirror: {}", crate::names::display(p));
+        }
     }
 
     // Plan = how to turn the mirror's snapshot into HEAD's.
@@ -150,20 +183,48 @@ pub fn sync(repo: &Repo, root: &Path, force: bool) -> Result<SyncReport> {
         .iter()
         .map(|e| (e.path.as_str(), e))
         .collect();
+    let hash_of = |path: &str| target_by_path.get(path).map_or("", |e| e.hash.as_str());
 
     let prog = scan::Progress::new();
+    let tmp = dot(root).join("tmp");
+    std::fs::create_dir_all(&tmp)?;
+
+    // A name the mirror already holds (in any case, where its filesystem ignores
+    // case) can't be renamed onto until whatever holds it has moved or gone, so
+    // such a move parks its file under `.stowe/tmp/` and lands it last.
+    let fold = |p: &str| {
+        if folds {
+            p.to_lowercase()
+        } else {
+            p.to_string()
+        }
+    };
+    let taken: HashSet<String> = actual.keys().map(|p| fold(p)).collect();
+    let mut parked: Vec<(PathBuf, &String)> = Vec::new();
 
     // 1. Moves - rename in place (the whole point: no re-copy). Cheap metadata
     //    ops, but each is a network round-trip on an sshfs mirror, so report.
     let mut copies: Vec<(&String, PathBuf)> = Vec::new();
     for (i, (from, to)) in d.moved.iter().enumerate() {
         let src = root.join(from);
-        let dst = root.join(to);
-        ensure_parent(&dst)?;
-        if src.exists() {
-            std::fs::rename(&src, &dst)?;
+        if !src.exists() {
+            copies.push((to, root.join(to))); // content isn't there to move; copy it below
+            continue;
+        }
+        if taken.contains(&fold(to)) {
+            let park = tmp.join(format!("move-{}-{}", parked.len(), hash_of(to)));
+            rename_on_mirror(&src, &park, from)?;
+            remove_file_and_empty_dirs(root, &src)?;
+            parked.push((park, to));
         } else {
-            copies.push((to, dst)); // content isn't there to move; copy it below
+            let dst = root.join(to);
+            ensure_parent(&dst)?;
+            rename_on_mirror(&src, &dst, from)?;
+        }
+        // Repair below reads `actual`, and would re-copy a file it still thinks
+        // is at its old path.
+        if let Some(size) = actual.remove(from) {
+            actual.insert(to.clone(), size);
         }
         prog.tick(&format!("moving... {}/{}", i + 1, d.moved.len()));
     }
@@ -182,11 +243,30 @@ pub fn sync(repo: &Repo, root: &Path, force: bool) -> Result<SyncReport> {
         }
         copies.push((path, root.join(path)));
     }
-    // 4. New files.
+    // 4. Spelling, where the filesystem ignores case: folders first, then the
+    //    parked moves land, then files still under an old spelling.
+    let mut respelled = 0;
+    if folds {
+        respell_dirs(root, target, &dirs_on_disk)?;
+    }
+    for (park, to) in &parked {
+        let dst = root.join(to);
+        ensure_parent(&dst)?;
+        rename_on_mirror(park, &dst, to)?;
+    }
+    for (_, path) in &spelled {
+        if target_by_path.contains_key(path.as_str()) && !d.modified.contains(path) {
+            let park = tmp.join(format!("move-respell-{}", hash_of(path)));
+            rename_on_mirror(&root.join(path), &park, path)?;
+            rename_on_mirror(&park, &root.join(path), path)?;
+            respelled += 1;
+        }
+    }
+    // 5. New files.
     for path in &d.added {
         copies.push((path, root.join(path)));
     }
-    // 5. Repair. The plan so far is a diff of two manifests, which is blind to the
+    // 6. Repair. The plan so far is a diff of two manifests, which is blind to the
     // mirror's real state: a file deleted or truncated on the drive still matches
     // between snapshots, so bring back anything the target wants and does not have.
     let queued: HashSet<&str> = copies.iter().map(|(p, _)| p.as_str()).collect();
@@ -212,8 +292,10 @@ pub fn sync(repo: &Repo, root: &Path, force: bool) -> Result<SyncReport> {
         pool.install(|| -> Result<()> {
             copies
                 .par_iter()
-                .map(|(path, dst)| -> Result<()> {
-                    copy_in(repo, &by_hash, &target_by_path, path, dst)?;
+                .enumerate()
+                .map(|(i, (path, dst))| -> Result<()> {
+                    let part = tmp.join(format!("copy-{i}"));
+                    copy_in(repo, &by_hash, &target_by_path, path, dst, &part)?;
                     let n = done.fetch_add(1, Ordering::Relaxed) + 1;
                     if n.is_multiple_of(8) || n == total {
                         prog.tick(&format!("copying... {n}/{total}"));
@@ -228,6 +310,7 @@ pub fn sync(repo: &Repo, root: &Path, force: bool) -> Result<SyncReport> {
     // behind, empty. Sweep every such ghost (this also heals a mirror that
     // accumulated them before this pass existed).
     prune_empty_dirs(root)?;
+    let _ = std::fs::remove_dir(&tmp);
 
     // History + ref, so the mirror is self-describing.
     let mut new_commits = 0;
@@ -243,7 +326,7 @@ pub fn sync(repo: &Repo, root: &Path, force: bool) -> Result<SyncReport> {
 
     Ok(SyncReport {
         added: d.added.len(),
-        moved: d.moved.len(),
+        moved: d.moved.len() + respelled,
         modified: d.modified.len(),
         removed: d.removed.len(),
         new_commits,
@@ -251,13 +334,15 @@ pub fn sync(repo: &Repo, root: &Path, force: bool) -> Result<SyncReport> {
 }
 
 /// Copy the content for `path` (in the target snapshot) from the local working
-/// tree into `dst` on the mirror.
+/// tree into `dst` on the mirror, by way of `part`, so a copy cut short never
+/// sits at `dst` looking like the real file.
 fn copy_in(
     repo: &Repo,
     by_hash: &HashMap<&str, &str>,
     target_by_path: &HashMap<&str, &Entry>,
     path: &str,
     dst: &Path,
+    part: &Path,
 ) -> Result<()> {
     let entry = target_by_path
         .get(path)
@@ -268,9 +353,56 @@ fn copy_in(
              since the commit) - restore it or commit the change before pushing"
         )
     })?;
+    let shown = crate::names::display(path);
+    std::fs::copy(repo.root.join(src_rel), part)
+        .with_context(|| format!("copying {shown} to mirror"))?;
     ensure_parent(dst)?;
-    std::fs::copy(repo.root.join(src_rel), dst)
-        .with_context(|| format!("copying {} to mirror", crate::names::display(path)))?;
+    // An sftp server without the posix-rename extension refuses to rename onto
+    // an existing file, which a repair does.
+    if std::fs::rename(part, dst).is_err() {
+        if dst.is_file() {
+            std::fs::remove_file(dst).with_context(|| format!("replacing {shown} on mirror"))?;
+        }
+        std::fs::rename(part, dst).with_context(|| format!("copying {shown} to mirror"))?;
+    }
+    Ok(())
+}
+
+/// Rename on the mirror, saying which file failed.
+fn rename_on_mirror(from: &Path, to: &Path, path: &str) -> Result<()> {
+    std::fs::rename(from, to)
+        .with_context(|| format!("moving {} on mirror", crate::names::display(path)))
+}
+
+/// Clear out `.stowe/tmp/` after a push that was cut short: a half-written copy
+/// is dropped, and a file parked mid-move becomes a preserved version when its
+/// bytes still match the hash in its name, rather than sitting where no walk
+/// ever looks.
+fn recover_tmp(root: &Path) -> Result<()> {
+    let Ok(rd) = std::fs::read_dir(dot(root).join("tmp")) else {
+        return Ok(());
+    };
+    for entry in rd {
+        let entry = entry?;
+        if !entry.file_type()?.is_file() {
+            continue;
+        }
+        let path = entry.path();
+        let name = entry.file_name().to_string_lossy().into_owned();
+        let hash = name
+            .strip_prefix("move-")
+            .and_then(|rest| rest.rsplit_once('-'))
+            .map(|(_, h)| h)
+            .filter(|h| h.len() == 64);
+        match hash {
+            Some(h) if !object_path(root, h).exists() && scan::hash_file(&path)? == h => {
+                let obj = object_path(root, h);
+                ensure_parent(&obj)?;
+                std::fs::rename(&path, &obj)?;
+            }
+            _ => std::fs::remove_file(&path)?,
+        }
+    }
     Ok(())
 }
 
@@ -288,6 +420,79 @@ fn preserve(root: &Path, hash: &str, current: &Path) -> Result<()> {
     // Rename frees the real path for the new content and is instant on-device.
     std::fs::rename(current, &obj)
         .with_context(|| format!("preserving old {}", current.display()))?;
+    Ok(())
+}
+
+/// Every directory holding a file in `actual`, keyed by its lowercase name,
+/// spelled as it is on disk.
+fn dir_spellings(actual: &HashMap<String, u64>) -> HashMap<String, String> {
+    let mut out = HashMap::new();
+    for path in actual.keys() {
+        for (slash, _) in path.match_indices('/') {
+            let dir = &path[..slash];
+            out.entry(dir.to_lowercase())
+                .or_insert_with(|| dir.to_string());
+        }
+    }
+    out
+}
+
+/// Where the filesystem ignores case: recorded paths the mirror holds under
+/// another spelling, as `(on_disk, recorded)` pairs, with `actual` rekeyed to
+/// the recorded spelling, since it is the same file. Only a recorded path is
+/// matched, so a file dropped on the mirror by hand stays drift.
+fn adopt_spellings(
+    actual: &mut HashMap<String, u64>,
+    recorded: &Manifest,
+) -> Vec<(String, String)> {
+    let recorded_paths: HashSet<&str> = recorded.iter().map(|e| e.path.as_str()).collect();
+    let mut by_fold: HashMap<String, Vec<String>> = HashMap::new();
+    for p in actual.keys() {
+        if !recorded_paths.contains(p.as_str()) {
+            by_fold.entry(p.to_lowercase()).or_default().push(p.clone());
+        }
+    }
+    let mut out = Vec::new();
+    for e in recorded {
+        if actual.contains_key(&e.path) {
+            continue;
+        }
+        let Some([on_disk]) = by_fold.get(&e.path.to_lowercase()).map(Vec::as_slice) else {
+            continue;
+        };
+        if let Some(size) = actual.remove(on_disk) {
+            actual.insert(e.path.clone(), size);
+            out.push((on_disk.clone(), e.path.clone()));
+        }
+    }
+    out
+}
+
+/// Where the filesystem ignores case: give each folder the spelling `target`
+/// uses. A rename that only changes case does nothing there, so it goes by a
+/// temporary name beside the folder, taking whatever else is inside along.
+/// `on_disk` is the spelling the walk found; a folder the moves already emptied
+/// is gone, and the files landing in it create it spelled right.
+fn respell_dirs(root: &Path, target: &Manifest, on_disk: &HashMap<String, String>) -> Result<()> {
+    let mut wanted: Vec<&str> = target
+        .iter()
+        .flat_map(|e| e.path.match_indices('/').map(|(slash, _)| &e.path[..slash]))
+        .collect::<HashSet<_>>()
+        .into_iter()
+        .collect();
+    wanted.sort_by_key(|d| d.matches('/').count());
+    for dir in wanted {
+        let Some(spelled) = on_disk.get(&dir.to_lowercase()) else {
+            continue;
+        };
+        let src = root.join(spelled);
+        if spelled == dir || !src.is_dir() {
+            continue;
+        }
+        let park = src.with_file_name(".stowe-respell");
+        rename_on_mirror(&src, &park, spelled)?;
+        rename_on_mirror(&park, &root.join(dir), dir)?;
+    }
     Ok(())
 }
 
@@ -356,13 +561,21 @@ fn remove_file_and_empty_dirs(root: &Path, file: &Path) -> Result<()> {
 /// indexes the folder, and junk stowe would never push must not read as drift
 /// and demand `--force` on every single push.
 fn mirror_sizes(root: &Path, ignore: &Ignore) -> Result<HashMap<String, u64>> {
-    let mut out = HashMap::new();
+    Ok(walk_mirror(root, ignore)?
+        .into_iter()
+        .map(|(rel, _, size)| (rel, size))
+        .collect())
+}
+
+/// Every file on the mirror outside `.stowe/`: `(rel, abs, size)`. A folder that
+/// can't be read is an error, not an empty folder, because what isn't seen here
+/// reads as deleted.
+fn walk_mirror(root: &Path, ignore: &Ignore) -> Result<Vec<(String, PathBuf, u64)>> {
+    let mut out = Vec::new();
     let mut stack = vec![root.to_path_buf()];
     while let Some(dir) = stack.pop() {
-        let rd = match std::fs::read_dir(&dir) {
-            Ok(rd) => rd,
-            Err(_) => continue,
-        };
+        let rd = std::fs::read_dir(&dir)
+            .with_context(|| format!("reading {} on mirror", crate::paths::short(&dir)))?;
         for entry in rd {
             let entry = entry?;
             if entry.file_name() == std::ffi::OsStr::new(".stowe") {
@@ -370,11 +583,7 @@ fn mirror_sizes(root: &Path, ignore: &Ignore) -> Result<HashMap<String, u64>> {
             }
             let ft = entry.file_type()?;
             let abs = entry.path();
-            let rel = abs
-                .strip_prefix(root)
-                .unwrap_or(&abs)
-                .to_string_lossy()
-                .replace('\\', "/");
+            let rel = scan::recordable_path(root, &abs)?;
             if ignore.is_ignored(&rel, ft.is_dir()) {
                 continue;
             }
@@ -385,7 +594,8 @@ fn mirror_sizes(root: &Path, ignore: &Ignore) -> Result<HashMap<String, u64>> {
             if !ft.is_file() {
                 continue;
             }
-            out.insert(rel, entry.metadata()?.len());
+            let size = entry.metadata()?.len();
+            out.push((rel, abs, size));
         }
     }
     Ok(out)
@@ -430,69 +640,15 @@ fn detect_drift(actual: &HashMap<String, u64>, recorded: &Manifest, target: &Man
     drift
 }
 
-/// What a pull brought down.
-pub struct PullReport {
-    pub head: String,
-    pub new_commits: usize,
-    pub written: usize,
+/// The commit the mirror at `root` reflects, if anything was pushed there.
+pub fn head(root: &Path) -> Result<Option<String>> {
+    read_ref(root)
 }
 
-/// Pull a local mirror at `root` into `repo`: copy down the history and rebuild
-/// the working tree from the mirror's real files (falling back to preserved
-/// versions in `.stowe/objects/` if a current file is somehow missing).
-pub fn pull(repo: &Repo, root: &Path) -> Result<PullReport> {
-    let remote_head = read_ref(root)?.ok_or_else(|| {
-        anyhow!(
-            "mirror `{}` is empty - nothing to pull",
-            crate::paths::short(root)
-        )
-    })?;
-
-    // Copy down the commit chain metadata we don't already have.
-    let mut new_commits = 0;
-    let mut cur = Some(remote_head.clone());
-    while let Some(h) = cur {
-        let local = repo.dir.join("commits").join(format!("{h}.json"));
-        let bytes = if local.exists() {
-            std::fs::read(&local)?
-        } else {
-            let b = std::fs::read(dot(root).join("commits").join(format!("{h}.json")))
-                .with_context(|| format!("reading mirror commit {h}"))?;
-            std::fs::write(&local, &b)?;
-            new_commits += 1;
-            b
-        };
-        let commit: Commit = serde_json::from_slice(&bytes)?;
-        cur = commit.parent;
-    }
-    repo.set_head(&remote_head)?;
-
-    // Rebuild the working tree for the mirror's snapshot.
-    let files = read_commit_files(root, &remote_head)?;
-    let mut written = 0;
-    for e in &files {
-        let dest = repo.root.join(&e.path);
-        if dest.exists() && scan::hash_file(&dest)? == e.hash {
-            continue;
-        }
-        // Prefer the mirror's current real file; fall back to a preserved copy.
-        let real = root.join(&e.path);
-        let src = if real.exists() && scan::hash_file(&real)? == e.hash {
-            real
-        } else {
-            object_path(root, &e.hash)
-        };
-        ensure_parent(&dest)?;
-        std::fs::copy(&src, &dest).with_context(|| format!("pulling {} from mirror", e.path))?;
-        written += 1;
-    }
-    repo.clear_index()?;
-
-    Ok(PullReport {
-        head: remote_head,
-        new_commits,
-        written,
-    })
+/// A commit's JSON as the mirror stores it.
+pub fn commit_bytes(root: &Path, hash: &str) -> Result<Vec<u8>> {
+    std::fs::read(dot(root).join("commits").join(format!("{hash}.json")))
+        .with_context(|| format!("reading mirror commit {}", short(hash)))
 }
 
 /// What an adapt pulled in from the mirror.
@@ -510,13 +666,17 @@ impl AdaptReport {
     }
 }
 
-/// Reconcile the local working tree to the mirror's *actual current files* -
-/// including anything changed on the mirror outside stowe (a song copy-pasted
-/// onto the phone, one deleted by hand). The reverse of push: `remote ➜ local`.
+/// Bring changes made on the mirror outside stowe (a song copy-pasted onto the
+/// phone, one deleted by hand) into the local working tree. The reverse of
+/// push: `remote ➜ local`.
 ///
-/// Only the working tree is changed; the caller still `commit`s to record it.
-/// To stay cheap we trust the mirror's recorded hashes for same-path/same-size
-/// files and only hash what actually differs (the drift).
+/// What counts is only what changed on the mirror since stowe last wrote it
+/// (its recorded snapshot against its real files), so a local file the mirror
+/// never had - committed and not pushed yet, or untracked - is left alone. A
+/// path changed on both sides is a conflict, and any conflict stops the adapt
+/// before it touches anything. Only the working tree is changed; the caller
+/// still `commit`s to record it. To stay cheap we trust the mirror's recorded
+/// hashes for same-path/same-size files and only hash what actually differs.
 pub fn adapt(repo: &Repo, root: &Path) -> Result<AdaptReport> {
     let recorded: Manifest = match read_ref(root)? {
         Some(h) => read_commit_files(root, &h)?,
@@ -527,110 +687,161 @@ pub fn adapt(repo: &Repo, root: &Path) -> Result<AdaptReport> {
 
     // The mirror's true current snapshot (captures manual drift). Ignored paths
     // stay out of it, so `adapt` never imports the drive's own junk.
-    let ignore = Ignore::load(&repo.root);
+    let ignore = Ignore::load(&repo.root).keeping(recorded.iter().map(|e| e.path.as_str()));
     let mut actual: Manifest = Vec::new();
-    let mut stack = vec![root.to_path_buf()];
-    while let Some(dir) = stack.pop() {
-        let rd = match std::fs::read_dir(&dir) {
-            Ok(rd) => rd,
-            Err(_) => continue,
+    for (rel, abs, size) in walk_mirror(root, &ignore)? {
+        let hash = match rec_by_path.get(rel.as_str()) {
+            Some(e) if e.size == size => e.hash.clone(),
+            _ => scan::hash_file(&abs)?,
         };
-        for entry in rd {
-            let entry = entry?;
-            if entry.file_name() == std::ffi::OsStr::new(".stowe") {
-                continue;
-            }
-            let ft = entry.file_type()?;
-            let abs = entry.path();
-            let rel = abs
-                .strip_prefix(root)
-                .unwrap_or(&abs)
-                .to_string_lossy()
-                .replace('\\', "/");
-            if ignore.is_ignored(&rel, ft.is_dir()) {
-                continue;
-            }
-            if ft.is_dir() {
-                stack.push(abs);
-                continue;
-            }
-            if !ft.is_file() {
-                continue;
-            }
-            let size = entry.metadata()?.len();
-            // Same path + same size as recorded → trust the stored hash; only
-            // hash foreign or resized files (the actual drift).
-            let hash = match rec_by_path.get(rel.as_str()) {
-                Some(e) if e.size == size => e.hash.clone(),
-                _ => scan::hash_file(&abs)?,
-            };
-            actual.push(Entry {
-                path: rel,
-                size,
-                mtime: 0, // unused: the diff keys on path+hash, and commit re-records it
-                hash,
-                fp: None,
-            });
+        actual.push(Entry {
+            path: rel,
+            size,
+            mtime: 0, // unused: the diff keys on path+hash, and commit re-records it
+            hash,
+            fp: None,
+        });
+    }
+    let on_mirror = scan::diff(&recorded, &actual);
+    let new_hash: HashMap<&str, &str> = actual
+        .iter()
+        .map(|e| (e.path.as_str(), e.hash.as_str()))
+        .collect();
+
+    // A local path may change only while it still holds what the mirror recorded
+    // there (or is already what the mirror holds now).
+    let scanned = scan::scan(repo, &repo.head_manifest()?, false)?;
+    let scanned: HashMap<&str, &str> = scanned
+        .iter()
+        .map(|e| (e.path.as_str(), e.hash.as_str()))
+        .collect();
+    let local = |path: &str| -> Result<Option<String>> {
+        if let Some(h) = scanned.get(path) {
+            return Ok(Some(h.to_string()));
         }
-    }
-
-    // What must change locally to match the mirror.
-    let local = scan::scan(repo, &repo.head_manifest()?, false)?;
-    let d = scan::diff(&local, &actual);
-
-    // Apply to the local working tree.
-    for (from, to) in &d.moved {
-        let src = repo.root.join(from);
-        let dst = repo.root.join(to);
-        ensure_parent(&dst)?;
-        if src.exists() {
-            std::fs::rename(&src, &dst)?;
-        } else {
-            std::fs::copy(root.join(to), &dst)?;
-        }
-    }
-    for path in &d.removed {
-        let p = repo.root.join(path);
-        if p.exists() {
-            std::fs::remove_file(&p)?;
-        }
-    }
-    for path in d.added.iter().chain(d.modified.iter()) {
-        let dst = repo.root.join(path);
-        ensure_parent(&dst)?;
-        std::fs::copy(root.join(path), &dst)
-            .with_context(|| format!("adopting {path} from mirror"))?;
-    }
-
-    Ok(AdaptReport {
-        added: d.added.len(),
-        removed: d.removed.len(),
-        modified: d.modified.len(),
-        moved: d.moved.len(),
-    })
-}
-
-/// Copy the bytes for content `hash` from the mirror into `dest`, for `restore`.
-/// Looks in the preserved-version store first, then among the mirror's current
-/// files. Returns `false` if this mirror doesn't have that content.
-pub fn fetch(root: &Path, hash: &str, dest: &Path) -> Result<bool> {
-    let obj = object_path(root, hash);
-    let src = if obj.exists() {
-        obj
-    } else {
-        // Maybe it's a file that's still current on the mirror.
-        let Some(h) = read_ref(root)? else {
-            return Ok(false);
-        };
-        match read_commit_files(root, &h)?.iter().find(|e| e.hash == hash) {
-            Some(e) => root.join(&e.path),
-            None => return Ok(false),
+        let abs = repo.root.join(path);
+        match std::fs::symlink_metadata(&abs) {
+            Ok(m) if m.is_file() => Ok(Some(scan::hash_file(&abs)?)),
+            Ok(_) => Ok(Some(String::new())),
+            Err(_) => Ok(None),
         }
     };
-    ensure_parent(dest)?;
-    std::fs::copy(&src, dest)
-        .with_context(|| format!("restoring {} from mirror", dest.display()))?;
-    Ok(true)
+    let was = |path: &str| rec_by_path.get(path).map(|e| e.hash.as_str());
+    let now = |path: &str| new_hash.get(path).copied();
+
+    let mut conflicts: Vec<&String> = Vec::new();
+    let mut renames: Vec<(&String, &String)> = Vec::new();
+    let mut deletes: Vec<&String> = Vec::new();
+    let mut copies: Vec<&String> = Vec::new();
+    let mut report = AdaptReport::default();
+    for (from, to) in &on_mirror.moved {
+        let (src, dst) = (local(from)?, local(to)?);
+        if dst.is_some() && dst.as_deref() != now(to) {
+            conflicts.push(to);
+        } else if src.is_some() && src.as_deref() != was(from) {
+            conflicts.push(from);
+        } else {
+            if src.is_some() && dst.is_none() && was(from) == now(to) {
+                renames.push((from, to));
+            } else {
+                if src.is_some() {
+                    deletes.push(from);
+                }
+                if dst.is_none() {
+                    copies.push(to);
+                }
+            }
+            report.moved += 1;
+        }
+    }
+    for path in &on_mirror.removed {
+        match local(path)? {
+            None => {}
+            Some(h) if Some(h.as_str()) == was(path) => {
+                deletes.push(path);
+                report.removed += 1;
+            }
+            Some(_) => conflicts.push(path),
+        }
+    }
+    for path in &on_mirror.modified {
+        match local(path)? {
+            Some(h) if Some(h.as_str()) == now(path) => {}
+            Some(h) if Some(h.as_str()) == was(path) => {
+                copies.push(path);
+                report.modified += 1;
+            }
+            _ => conflicts.push(path),
+        }
+    }
+    for path in &on_mirror.added {
+        match local(path)? {
+            None => {
+                copies.push(path);
+                report.added += 1;
+            }
+            Some(h) if Some(h.as_str()) == now(path) => {}
+            Some(_) => conflicts.push(path),
+        }
+    }
+    if !conflicts.is_empty() {
+        conflicts.sort();
+        conflicts.dedup();
+        eprintln!("changed both here and on the mirror:");
+        for p in &conflicts {
+            eprintln!("  {}", crate::names::display(p));
+        }
+        bail!(
+            "nothing adapted - commit or restore those files here first, so a change on one \
+             side doesn't overwrite the other"
+        );
+    }
+
+    for (from, to) in renames {
+        let dst = repo.root.join(to);
+        ensure_parent(&dst)?;
+        std::fs::rename(repo.root.join(from), &dst).with_context(|| {
+            format!("moving {} in the working tree", crate::names::display(from))
+        })?;
+    }
+    for path in deletes {
+        std::fs::remove_file(repo.root.join(path))
+            .with_context(|| format!("removing {}", crate::names::display(path)))?;
+    }
+    for path in copies {
+        let want = now(path).unwrap_or_default();
+        if !scan::copy_verified(&root.join(path), &repo.root.join(path), want)
+            .with_context(|| format!("adopting {} from mirror", crate::names::display(path)))?
+        {
+            bail!(
+                "`{}` changed on the mirror while adapting - run `stowe adapt` again",
+                crate::names::display(path)
+            );
+        }
+    }
+    Ok(report)
+}
+
+/// Copy the bytes for content `hash` from the mirror into `dest`, checked
+/// against `hash` on the way. Looks in the preserved-version store, then at
+/// `path` on the mirror, then at any current file the mirror recorded with that
+/// content. Returns `false` if none of them holds it.
+pub fn fetch(root: &Path, path: &str, hash: &str, dest: &Path) -> Result<bool> {
+    let mut candidates = vec![object_path(root, hash), root.join(path)];
+    if let Some(h) = read_ref(root)? {
+        candidates.extend(
+            read_commit_files(root, &h)?
+                .iter()
+                .filter(|e| e.hash == hash)
+                .map(|e| root.join(&e.path)),
+        );
+    }
+    for src in candidates {
+        if src.is_file() && scan::copy_verified(&src, dest, hash)? {
+            return Ok(true);
+        }
+    }
+    Ok(false)
 }
 
 // --- format conversion (backup <-> mirror, in place) ------------------------
@@ -726,25 +937,39 @@ pub fn backup_to_mirror(root: &Path) -> Result<ConvertReport> {
 
 /// Convert a playable mirror back into an object-store backup, in place. Real
 /// files are *renamed* into content-addressed blobs (dropped when a duplicate
-/// is already stored), then the empty tree is removed.
-pub fn mirror_to_backup(root: &Path) -> Result<ConvertReport> {
+/// is already stored), and the folders that empties are removed; anything else
+/// on the drive stays where it is.
+pub fn mirror_to_backup(repo: &Repo, root: &Path) -> Result<ConvertReport> {
     let head = read_ref(root)?.ok_or_else(|| anyhow!("mirror is empty - nothing to convert"))?;
     let manifest = read_commit_files(root, &head)?;
+
+    // A file edited or deleted on the mirror would be filed under the hash of
+    // the version it replaced, or be missing from the backup.
+    let ignore = Ignore::load(&repo.root).keeping(manifest.iter().map(|e| e.path.as_str()));
+    let mut drift = detect_drift(&mirror_sizes(root, &ignore)?, &manifest, &manifest);
+    drift.foreign.clear();
+    if !drift.is_empty() {
+        drift.report();
+        bail!(
+            "mirror `{}` has changes made outside stowe - `stowe adapt` or `stowe push --force` \
+             it before converting",
+            crate::paths::short(root)
+        );
+    }
     std::fs::create_dir_all(root.join("objects"))?;
 
     let mut files = 0;
     for e in &manifest {
         let real = root.join(&e.path);
         let blob = root.join("objects").join(&e.hash[..2]).join(&e.hash[2..]);
-        if blob.exists() {
-            if real.exists() {
-                std::fs::remove_file(&real)?; // content already stored (dedup)
-            }
-        } else if real.exists() {
+        if !blob.exists() && real.exists() {
             ensure_parent(&blob)?;
             std::fs::rename(&real, &blob)?;
             files += 1;
         }
+        // Content already stored (dedup) goes with the file, as do the folders
+        // it leaves empty.
+        remove_file_and_empty_dirs(root, &real)?;
     }
 
     // Preserved old versions rejoin the flat object store.
@@ -758,18 +983,6 @@ pub fn mirror_to_backup(root: &Path) -> Result<ConvertReport> {
         root.join("refs").join("main"),
     )?;
     let _ = std::fs::remove_dir_all(dot(root));
-
-    // The now-empty playable directories (everything but the object store) go.
-    for entry in std::fs::read_dir(root)? {
-        let entry = entry?;
-        let name = entry.file_name();
-        if name == "objects" || name == "commits" || name == "refs" {
-            continue;
-        }
-        if entry.file_type()?.is_dir() {
-            let _ = std::fs::remove_dir_all(entry.path());
-        }
-    }
 
     Ok(ConvertReport { files, preserved })
 }

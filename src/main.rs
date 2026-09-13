@@ -101,7 +101,7 @@ enum Cmd {
     },
     /// Show commit history (newest first)
     Log,
-    /// Manage remotes - no subcommand lists them
+    /// Manage remotes - no subcommand lists them  [COMMAND]
     ///   remote add <NAME> <URL>   add or update a remote
     ///     --format mirror|backup  on-disk shape (default: local -> mirror)
     ///     --mount CMD             command that mounts it, run when unreachable
@@ -115,30 +115,31 @@ enum Cmd {
         cmd: Option<RemoteCmd>,
     },
     /// Sync remote(s) to the latest commit  [REMOTES]...
-    ///   --force                   overwrite by-hand changes on a mirror
+    ///   --force                   overwrite what changed there outside this repo
     #[command(verbatim_doc_comment)]
     Push {
         /// Remotes to push to. Omit for `origin`; list several to fan out.
         remotes: Vec<String>,
-        /// For mirror remotes: overwrite changes made on the mirror outside stowe.
+        /// Overwrite what changed on the remote outside this repo: files changed
+        /// on a mirror by hand, or commits pushed there from somewhere else.
         #[arg(long)]
         force: bool,
     },
     /// Rebuild the working tree from a remote  [REMOTE]
     Pull {
-        /// The remote to rebuild from (default: origin)
+        /// The remote to rebuild from
         #[arg(default_value = "origin")]
         remote: String,
     },
     /// Pull a mirror's by-hand changes into local (remote -> local)  [REMOTE]
     Adapt {
-        /// The mirror remote to adopt changes from (default: origin).
+        /// The mirror remote to adopt changes from
         #[arg(default_value = "origin")]
         remote: String,
     },
     /// Recover committed file(s) from a remote  [PATHS]...
     ///   -A                        restore the whole snapshot
-    ///   --from C                  the version from commit C (else HEAD)
+    ///   --from C                  the version from commit C (default: HEAD)
     ///   --remote R                which remote to fetch from (default: origin)
     #[command(verbatim_doc_comment)]
     Restore {
@@ -156,10 +157,10 @@ enum Cmd {
         remote: String,
     },
     /// Flip a remote between mirror and backup, in place  [REMOTE]
-    ///   --to mirror|backup        target format (omit to flip)
+    ///   --to mirror|backup        target format (default: the other one)
     #[command(verbatim_doc_comment)]
     Convert {
-        /// The remote to convert (default: origin).
+        /// The remote to convert
         #[arg(default_value = "origin")]
         remote: String,
         /// Target format. Omit to flip to the other one.
@@ -194,5 +195,3 @@ fn main() -> Result<()> {
         Cmd::Selfie(cmd) => selfcmd::run(cmd),
     }
 }
-
-// --- commands ---------------------------------------------------------------

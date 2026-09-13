@@ -6,11 +6,11 @@ use std::path::{Path, PathBuf};
 
 use crate::model::Entry;
 use crate::model::short;
+use crate::remote::Source;
 use crate::remote::ensure_reachable;
-use crate::remote::remote_format;
 use crate::remote::remote_url;
 use crate::repo::Repo;
-use crate::{mirror, remote, scan};
+use crate::scan;
 
 pub fn run(paths: Vec<PathBuf>, all: bool, from: Option<&str>, remote_name: &str) -> Result<()> {
     let repo = Repo::find()?;
@@ -83,17 +83,7 @@ pub fn run(paths: Vec<PathBuf>, all: bool, from: Option<&str>, remote_name: &str
     // never doubles your disk.
     let url = remote_url(&repo, remote_name)?;
     ensure_reachable(&repo, &repo.config()?, remote_name, &url)?;
-    let mirror_root =
-        match remote_format(&repo.config()?, remote_name, &url) {
-            mirror::Format::Mirror => Some(mirror::local_root(&url).ok_or_else(|| {
-                anyhow!("remote `{remote_name}` is set to mirror but isn't local")
-            })?),
-            _ => None,
-        };
-    let backend = match &mirror_root {
-        Some(_) => None,
-        None => Some(remote::open(&url)?),
-    };
+    let source = Source::open(&repo, remote_name, &url)?;
 
     let mut restored = 0usize;
     let mut skipped = 0usize;
@@ -104,22 +94,11 @@ pub fn run(paths: Vec<PathBuf>, all: bool, from: Option<&str>, remote_name: &str
             skipped += 1;
             continue;
         }
-        let got = match &mirror_root {
-            Some(root) => mirror::fetch(root, &e.hash, &dest)?,
-            None => {
-                let backend = backend.as_ref().unwrap();
-                let key = remote::object_key(&e.hash);
-                if backend.exists(&key)? {
-                    backend.get_file(&key, &dest)?;
-                    true
-                } else {
-                    false
-                }
-            }
-        };
+        let got = source.fetch(&e.path, &e.hash, &dest)?;
         if !got {
             bail!(
-                "content for `{}` (commit {}) isn't on remote `{remote_name}` - was it pushed?",
+                "content for `{}` (commit {}) isn't on remote `{remote_name}` - it was never \
+                 pushed there, or was changed there outside stowe",
                 e.path,
                 short(&chash)
             );

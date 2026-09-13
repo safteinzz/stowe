@@ -42,6 +42,8 @@ pub fn run(cmd: Option<RemoteCmd>) -> Result<()> {
             format,
             mount,
         }) => {
+            crate::repo::valid_remote_name(&name)?;
+            let url = absolute_url(&url)?;
             let mut cfg = repo.config()?;
             match &format {
                 Some(fmt) => {
@@ -80,7 +82,15 @@ pub fn run(cmd: Option<RemoteCmd>) -> Result<()> {
                     return Ok(());
                 }
             }
-            cfg.remotes.insert(name.clone(), url.clone());
+            // Pushes to the old location say nothing about the new one, and the
+            // record of them would have push refuse it as a drive gone missing.
+            if cfg
+                .remotes
+                .insert(name.clone(), url.clone())
+                .is_some_and(|old| old != url)
+            {
+                repo.forget_remote_head(&name)?;
+            }
             repo.save_config(&cfg)?;
             println!(
                 "remote `{name}` -> {} ({} format)",
@@ -111,4 +121,33 @@ pub fn run(cmd: Option<RemoteCmd>) -> Result<()> {
         }
     }
     Ok(())
+}
+
+/// A local remote typed as a relative path, made absolute against the current
+/// directory, which is where the person typing it meant; stored relative, it
+/// would name a different place from every other directory. `..` is resolved
+/// by name, since the drive may not be mounted yet.
+fn absolute_url(url: &str) -> Result<String> {
+    let Some(root) = mirror::local_root(url) else {
+        return Ok(url.to_string());
+    };
+    if root.is_absolute() {
+        return Ok(url.to_string());
+    }
+    let mut abs = std::env::current_dir()?;
+    for part in root.components() {
+        match part {
+            std::path::Component::ParentDir => {
+                abs.pop();
+            }
+            std::path::Component::CurDir => {}
+            other => abs.push(other),
+        }
+    }
+    let prefix = if url.starts_with("local:") {
+        "local:"
+    } else {
+        ""
+    };
+    Ok(format!("{prefix}{}", abs.display()))
 }

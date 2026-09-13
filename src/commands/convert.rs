@@ -36,7 +36,7 @@ pub fn run(name: &str, to: Option<&str>) -> Result<()> {
 
     let r = match target {
         mirror::Format::Mirror => mirror::backup_to_mirror(&root)?,
-        mirror::Format::Backup => mirror::mirror_to_backup(&root)?,
+        mirror::Format::Backup => mirror::mirror_to_backup(&repo, &root)?,
         mirror::Format::Empty => unreachable!(),
     };
 
@@ -55,5 +55,3 @@ pub fn run(name: &str, to: Option<&str>) -> Result<()> {
     );
     Ok(())
 }
-
-// --- helpers ----------------------------------------------------------------

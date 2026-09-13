@@ -53,8 +53,6 @@ pub fn open(url: &str) -> Result<Remote> {
 }
 
 fn build_operator(url: &str) -> Result<Operator> {
-    // local:<path>  (or a bare path)
-    let local_path = url.strip_prefix("local:").unwrap_or(url);
     let is_s3 = url.starts_with("s3://");
 
     if is_s3 {
@@ -78,18 +76,23 @@ fn build_operator(url: &str) -> Result<Operator> {
         return Ok(Operator::new(b)?.finish());
     }
 
-    // Filesystem backend. Make sure the root exists so first push works.
-    std::fs::create_dir_all(local_path)
-        .with_context(|| format!("creating remote dir {local_path}"))?;
+    // Filesystem backend, at the same path a mirror would use. Make sure the
+    // root exists so first push works.
+    let root = crate::mirror::local_root(url).ok_or_else(|| {
+        anyhow!("unsupported remote `{url}` - use a path, `local:/path` or `s3://`")
+    })?;
+    let local_path = root.to_string_lossy();
+    std::fs::create_dir_all(&root)
+        .with_context(|| format!("creating remote dir {}", crate::paths::short(&root)))?;
     // Write to a temp file and rename into place on close, so a killed push
     // (Ctrl+C, crash, unplugged drive) never leaves a corrupt file sitting
     // under its final content-hash key - which future pushes would then
     // mistake for a complete, valid object and skip forever.
-    let tmp_dir = Path::new(local_path).join(".stowe-tmp");
+    let tmp_dir = root.join(".stowe-tmp");
     std::fs::create_dir_all(&tmp_dir)?;
     Ok(Operator::new(
         services::Fs::default()
-            .root(local_path)
+            .root(&local_path)
             .atomic_write_dir(&tmp_dir.to_string_lossy()),
     )?
     .finish())
@@ -112,14 +115,18 @@ impl Remote {
             .block_on(async { Ok(self.op.read(key).await?.to_vec()) })
     }
 
-    /// Download `key` to a local path (creating parent dirs).
-    pub fn get_file(&self, key: &str, dest: &Path) -> Result<()> {
-        if let Some(parent) = dest.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-        let bytes = self.get_bytes(key)?;
-        std::fs::write(dest, bytes)?;
-        Ok(())
+    /// Stream `key` into `dest`, checked against `hash` on the way; see
+    /// [`crate::scan::copy_verified`]. Returns `false`, writing nothing, when
+    /// the bytes don't hash to `hash`.
+    pub fn get_file(&self, key: &str, dest: &Path, hash: &str) -> Result<bool> {
+        self.rt.block_on(async {
+            let mut landing = crate::scan::Landing::create(dest, hash)?;
+            let mut stream = self.op.reader(key).await?.into_bytes_stream(..).await?;
+            while let Some(chunk) = stream.next().await {
+                landing.write(&chunk?)?;
+            }
+            landing.finish()
+        })
     }
 
     /// Upload many `(key, source-file)` pairs, skipping keys already present.
@@ -182,6 +189,58 @@ async fn upload_one(op: &Operator, key: &str, src: &Path) -> Result<()> {
     }
     writer.close().await?;
     Ok(())
+}
+
+/// Where a remote's committed bytes are read back from, whichever shape it has.
+pub(crate) enum Source {
+    Mirror(PathBuf),
+    Backup(Remote),
+}
+
+impl Source {
+    pub fn open(repo: &Repo, name: &str, url: &str) -> Result<Source> {
+        match remote_format(&repo.config()?, name, url) {
+            crate::mirror::Format::Mirror => {
+                Ok(Source::Mirror(crate::mirror::local_root(url).ok_or_else(
+                    || anyhow!("remote `{name}` is set to mirror but {url} isn't local"),
+                )?))
+            }
+            _ => Ok(Source::Backup(open(url)?)),
+        }
+    }
+
+    /// The commit the remote is at, if anything was pushed there.
+    pub fn head(&self) -> Result<Option<String>> {
+        match self {
+            Source::Mirror(root) => crate::mirror::head(root),
+            Source::Backup(b) => {
+                if !b.exists("refs/main")? {
+                    return Ok(None);
+                }
+                let s = String::from_utf8(b.get_bytes("refs/main")?)?;
+                Ok(Some(s.trim().to_string()).filter(|s| !s.is_empty()))
+            }
+        }
+    }
+
+    pub fn commit_bytes(&self, hash: &str) -> Result<Vec<u8>> {
+        match self {
+            Source::Mirror(root) => crate::mirror::commit_bytes(root, hash),
+            Source::Backup(b) => b.get_bytes(&format!("commits/{hash}.json")),
+        }
+    }
+
+    /// Write the committed content `hash` (recorded at `path`) to `dest`.
+    /// Returns `false` when the remote doesn't hold those bytes.
+    pub fn fetch(&self, path: &str, hash: &str, dest: &Path) -> Result<bool> {
+        match self {
+            Source::Mirror(root) => crate::mirror::fetch(root, path, hash, dest),
+            Source::Backup(b) => {
+                let key = object_key(hash);
+                Ok(b.exists(&key)? && b.get_file(&key, dest, hash)?)
+            }
+        }
+    }
 }
 
 /// The on-disk format for a remote: an explicit config override, or the scheme

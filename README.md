@@ -16,29 +16,39 @@ stowe self update  # install the latest
 
 No cargo yet? Rust installs the same way on every distro: [rustup.rs](https://rustup.rs).
 
-![a terminal tour: a media archive is initialised, staged, committed and pushed to a drive as real folders, then two folders and a song are renamed and pushed again as moves rather than uploads, and a file dropped onto the drive by hand stops the next push until it is adopted](https://gitlab.com/safteinzz/stowe/-/raw/main/readme-assets/demo.gif)
-
 ## Back up a folder
 
-```sh
-stowe init
-stowe add -A
-stowe commit -m "import"
-stowe remote add origin local:/mnt/drive
-stowe push
+![stowe remote add pointing a remote at a drive, then stowe push copying the ten files of a freshly committed archive onto it](https://gitlab.com/safteinzz/stowe/-/raw/main/readme-assets/import.png)
+
+```bash
+stowe init                            # make this folder a repo
+stowe add -A                          # stage everything in it
+stowe commit -m "import the archive"  # record that snapshot
+stowe remote add drive local:~/drive  # somewhere to keep it
+stowe push drive                      # copy it there
 ```
 
 ## See what changed
+
+![stowe status after two folders were moved and a song retitled: six renames, each with the changed characters highlighted, two untracked files, and a summary line reading +2 -0 ~0 and 6 moved](https://gitlab.com/safteinzz/stowe/-/raw/main/readme-assets/status.png)
+
+```bash
+stowe status   # what changed since the last commit
+```
 
 Move a folder, rename a file, drop new ones in. stowe works out what actually
 happened instead of reporting a wall of deletes and adds, and marks only the
 characters that changed.
 
-![stowe status after two folders were moved and a song retitled: six renames, each with the changed characters highlighted, two untracked files, and a summary line reading +2 -0 ~0 and 6 moved](https://gitlab.com/safteinzz/stowe/-/raw/main/readme-assets/status.png)
-
 ## Commit and back it up
 
 ![stowe commit followed by stowe push drive, ending in a report reading plus 2 new, 0 changed, 6 moved, 0 removed](https://gitlab.com/safteinzz/stowe/-/raw/main/readme-assets/push.png)
+
+```bash
+stowe add -A                   # stage the moves and the new files
+stowe commit -m "reorganise"   # record them
+stowe push drive               # rename on the drive, copy only what is new
+```
 
 `+2 new, ~0 changed, ⇄6 moved` is the point: the six relocated files were
 renamed in place on the drive. Only the two genuinely new files crossed the
@@ -46,7 +56,7 @@ wire. Reorganising a terabyte archive stays cheap.
 
 ## The backup is just your files
 
-![ls -la of the mirror showing Datasets, Music, Photos, Renders and Video directories alongside a hidden .stowe directory](https://gitlab.com/safteinzz/stowe/-/raw/main/readme-assets/mirror.png)
+![ls of the mirror showing the Datasets, Music, Photos, Renders and Video folders beside a hidden .stowe folder, then the two songs in Music under their own names](https://gitlab.com/safteinzz/stowe/-/raw/main/readme-assets/mirror.png)
 
 A mirror is your real tree at real paths. Plug the drive into anything, open the
 folders, play or edit what is inside. The history lives in `.stowe/` beside it,
@@ -55,6 +65,12 @@ so one drive is both a working copy and a time machine.
 ## Two shapes of remote
 
 ![two stowe remote add commands, one for a local drive and one for an s3 bucket with --format backup, then stowe remote listing the drive as mirror and the offsite bucket as backup](https://gitlab.com/safteinzz/stowe/-/raw/main/readme-assets/remote.png)
+
+```bash
+stowe remote add drive local:~/drive                                 # a mirror
+stowe remote add offsite s3://example-archive/stowe --format backup  # a backup
+stowe convert drive                                                  # flip one in place
+```
 
 - **mirror** (`local:`): real, browsable folders on a drive or phone.
 - **backup** (`s3://`, or `--format backup`): deduped content-addressed blobs.
@@ -67,41 +83,43 @@ flips a remote between the two **in place**, no re-upload.
 
 ![a file copied onto the mirror by hand, then stowe push halting with a report that the mirror was changed outside stowe and an error telling you to reconcile or use --force, then stowe adapt taking that file into the working tree](https://gitlab.com/safteinzz/stowe/-/raw/main/readme-assets/drift.png)
 
-Nothing is written until you decide: `stowe adapt` pulls those changes back into
-the repo, `--force` overwrites them.
+```bash
+stowe adapt drive        # take what changed on the drive into the working tree
+stowe push drive --force # or put the drive back the way this commit has it
+```
+
+Nothing is written until you decide. `adapt` brings the drive's changes home
+and stops at any file that changed on both sides; `--force` overwrites them,
+and removes what was dropped on the drive by hand.
 
 ## Commands
 
-```
-init     create a repo (.stowe/) in the current folder
-status   what changed since the last commit
-add      stage files            <paths...> | -A for everything
-unstage  discard the staging index (working tree untouched)
-commit   record the staged snapshot        -m MSG
-log      commit history, newest first
-remote   manage remotes - no subcommand lists them
-           add NAME URL  --format mirror|backup  --mount CMD
-push     sync remote(s) to the latest commit   [remotes...]  --force
-pull     rebuild the working tree from a remote          [remote]
-adapt    pull a remote's by-hand changes into local      [remote]
-restore  recover committed files  <paths...> -A --from COMMIT --remote R
-convert  flip a remote between mirror and backup, in place  --to FORMAT
-self     update or check stowe itself
-           update [-y]   reinstall the latest release
-           check         is a newer release out?
+```bash
+stowe unstage                  # drop what is staged, files untouched
+stowe log                      # history, newest first
+stowe pull drive               # rebuild the working tree from a remote
+stowe restore <paths>          # bring back committed files from a remote
+stowe restore -A --from <C>    # ...or a whole snapshot, as of commit C
 ```
 
-## Ignoring junk
+A command that takes a remote uses `origin` when none is named, and
+`stowe <command> --help` has every flag.
+
+## What it ignores
 
 Media folders fill up with things nobody wants versioned. Put a `.stoweignore`
-at the repo root:
+at the repo root, one pattern per line:
 
 ```
 # comments and blank lines are skipped
-.DS_Store           # a bare name matches that file or folder anywhere
-*.tmp               # `*` matches any run, `?` exactly one, within a segment
-.thumbnails/        # a trailing slash matches directories only
-Renders/proxies/    # a pattern with a slash is anchored at the repo root
+# a bare name matches that file or folder anywhere
+.DS_Store
+# `*` matches any run, `?` exactly one, within a segment
+*.tmp
+# a trailing slash matches directories only
+.thumbnails/
+# a pattern with a slash is anchored at the repo root
+Renders/proxies/
 ```
 
 The rules apply to every scan, the working tree **and** your remotes. That

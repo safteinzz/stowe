@@ -9,22 +9,34 @@
 //!
 //! ```text
 //! # comments and blank lines are skipped
-//! .DS_Store           # a bare name matches that file or folder anywhere
-//! *.tmp               # `*` matches any run, `?` exactly one, within a segment
-//! .thumbnails/        # a trailing slash matches directories only
-//! Renders/proxies/    # a pattern with a slash is anchored at the repo root
+//! # a bare name matches that file or folder anywhere
+//! .DS_Store
+//! # `*` matches any run, `?` exactly one, within a segment
+//! *.tmp
+//! # a trailing slash matches directories only
+//! .thumbnails/
+//! # a pattern with a slash is anchored at the repo root
+//! Renders/proxies/
 //! ```
+//!
+//! A `#` only starts a comment at the beginning of a line; anywhere else it is
+//! part of the pattern.
 //!
 //! Anything inside an ignored directory is ignored too. The rules apply to
 //! every tree walk - the working tree *and* a mirror's - so junk a drive
 //! recreates by itself never reads as drift. Naming a file explicitly
-//! (`stowe add junk.tmp`) still stages it: an exact path you typed wins.
+//! (`stowe add junk.tmp`) still stages it: an exact path you typed wins, and
+//! the file stays tracked from then on.
 
+use std::collections::HashSet;
 use std::path::Path;
 
 /// A parsed `.stoweignore`.
 pub struct Ignore {
     rules: Vec<Rule>,
+    /// Tracked paths, and every directory holding one: never ignored, since a
+    /// file staged by name must stay visible to every walk that looks for it.
+    kept: HashSet<String>,
 }
 
 struct Rule {
@@ -65,7 +77,31 @@ impl Ignore {
                 dir_only,
             });
         }
-        Ignore { rules }
+        Ignore {
+            rules,
+            kept: HashSet::new(),
+        }
+    }
+
+    /// The same rules, except that `tracked` paths are never ignored.
+    pub fn keeping<'a>(mut self, tracked: impl IntoIterator<Item = &'a str>) -> Ignore {
+        if self.rules.is_empty() {
+            return self;
+        }
+        for path in tracked {
+            if !self.is_ignored(path, false) {
+                continue;
+            }
+            let mut end = path.len();
+            while !self.kept.contains(&path[..end]) {
+                self.kept.insert(path[..end].to_string());
+                match path[..end].rfind('/') {
+                    Some(slash) => end = slash,
+                    None => break,
+                }
+            }
+        }
+        self
     }
 
     /// Is this repo-relative path excluded?
@@ -74,7 +110,7 @@ impl Ignore {
     /// ignored directory is still ignored even when the caller walked into it
     /// instead of pruning at the top.
     pub fn is_ignored(&self, rel: &str, is_dir: bool) -> bool {
-        if self.rules.is_empty() {
+        if self.rules.is_empty() || self.kept.contains(rel) {
             return false;
         }
         if self.matches(rel, is_dir) {

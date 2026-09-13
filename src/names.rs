@@ -12,7 +12,7 @@ use crate::repo::Repo;
 use crate::scan;
 use crate::time::now;
 use anyhow::bail;
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 
 use crate::model::{Commit, short};
 
@@ -93,6 +93,37 @@ pub fn probe_restrictive(root: &Path) -> bool {
     }
 }
 
+/// Does the filesystem at `root` ignore case (exFAT, FAT, a phone's shared
+/// storage)? Probed like [`probe_restrictive`]: a file created in lowercase is
+/// looked up in uppercase. Failing to probe assumes it doesn't.
+pub fn probe_case_insensitive(root: &Path) -> bool {
+    let dir = root.join(".stowe");
+    let probe = dir.join(".probe-case");
+    if std::fs::create_dir_all(&dir).is_err() || std::fs::write(&probe, b"").is_err() {
+        return false;
+    }
+    let folds = dir.join(".PROBE-CASE").symlink_metadata().is_ok();
+    let _ = std::fs::remove_file(&probe);
+    folds
+}
+
+/// Paths in `manifest`, and the folders holding them, that another path there
+/// spells the same apart from case: groups of two or more spellings.
+fn case_clashes(manifest: &crate::model::Manifest) -> Vec<Vec<String>> {
+    let mut by_fold: BTreeMap<String, BTreeSet<&str>> = BTreeMap::new();
+    for e in manifest {
+        let dirs = e.path.match_indices('/').map(|(slash, _)| &e.path[..slash]);
+        for p in dirs.chain([e.path.as_str()]) {
+            by_fold.entry(p.to_lowercase()).or_default().insert(p);
+        }
+    }
+    by_fold
+        .into_values()
+        .filter(|spellings| spellings.len() > 1)
+        .map(|spellings| spellings.into_iter().map(str::to_string).collect())
+        .collect()
+}
+
 /// Warn (non-blocking) when freshly staged names may not be storable on an
 /// external drive, so the surprise comes at `add` time, not mid-push weeks
 /// later. The strict character set is used: local ext4 may accept these, but
@@ -132,6 +163,26 @@ pub(crate) fn preflight_names(repo: &Repo, name: &str, root: &Path) -> Result<()
 
     let strict = probe_restrictive(root);
     let manifest = repo.head_manifest()?;
+
+    // Two names a drive that ignores case can't tell apart would be written to
+    // one file there, and the second would overwrite the first.
+    if probe_case_insensitive(root) {
+        let clashes = case_clashes(&manifest);
+        if !clashes.is_empty() {
+            eprintln!(
+                "{} names that differ only in case:",
+                "note:".yellow().bold()
+            );
+            for group in &clashes {
+                let shown: Vec<String> = group.iter().map(|p| display(p)).collect();
+                eprintln!("  {}", shown.join("  /  ").yellow());
+            }
+            bail!(
+                "`{name}` ignores case, so it can't hold both of each pair - rename one, commit, \
+                 and push again"
+            );
+        }
+    }
     let offenders: Vec<String> = manifest
         .iter()
         .map(|e| e.path.clone())
@@ -160,7 +211,7 @@ pub(crate) fn preflight_names(repo: &Repo, name: &str, root: &Path) -> Result<()
         let base = sanitize(old, strict);
         let mut target = base.clone();
         let mut n = 1;
-        while used.contains(&target) {
+        while used.contains(&target) || repo.root.join(&target).exists() {
             target = bump_name(&base, n);
             n += 1;
         }

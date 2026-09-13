@@ -45,6 +45,7 @@ pub fn run(paths: Vec<PathBuf>, all: bool) -> Result<()> {
 
     let root = repo.root.canonicalize()?;
     let cwd = std::env::current_dir()?;
+    let ignore = ignore::Ignore::load(&root).keeping(index.keys().map(String::as_str));
     let mut staged = 0usize;
     let mut removed = 0usize;
 
@@ -76,7 +77,7 @@ pub fn run(paths: Vec<PathBuf>, all: bool) -> Result<()> {
 
         if abs.is_dir() {
             // Stage every file under the directory (in parallel)...
-            let entries: Vec<Entry> = scan::files_under(&root, &abs, &ignore::Ignore::load(&root))?
+            let entries: Vec<Entry> = scan::files_under(&root, &abs, &ignore)?
                 .par_iter()
                 .map(|f| scan::entry_for(&root, f, true))
                 .collect::<Result<_>>()?;

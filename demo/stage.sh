@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# A staged home for the README screenshots and the demo GIF: an invented media
+# A staged home for the README screenshots: an invented media
 # archive and an invented drive to back it up to. Nothing here touches your real
 # files - HOME and every XDG variable are redirected into ./home, and the only
 # stowe that runs is this repo's release build.
 #
-#   ./stage.sh up      build the archive (no repo yet, this is the GIF's start)
+#   ./stage.sh up      build the archive (no repo yet, where the import starts)
 #   ./stage.sh mid     up, then init/commit/push and reorganise (the stills)
 #   ./stage.sh shell   a shell in the archive where `stowe` is this build
 #   ./stage.sh down    unmount anything under the stage, then delete it

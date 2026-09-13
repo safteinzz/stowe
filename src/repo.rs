@@ -147,9 +147,19 @@ impl Repo {
     // --- remote tracking --------------------------------------------------
 
     /// Where we remember the last commit pushed to a remote (git's
-    /// `refs/remotes/<name>/main`, roughly).
-    fn remote_ref(&self, name: &str) -> PathBuf {
-        self.dir.join("remotes").join(name)
+    /// `refs/remotes/<name>/main`, roughly). A name is one file name there, so
+    /// one that could step out of `remotes/` is refused.
+    fn remote_ref(&self, name: &str) -> Result<PathBuf> {
+        valid_remote_name(name)?;
+        Ok(self.dir.join("remotes").join(name))
+    }
+
+    /// Forget every push to `name`, for a remote that now points somewhere new.
+    pub fn forget_remote_head(&self, name: &str) -> Result<()> {
+        match std::fs::remove_file(self.remote_ref(name)?) {
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e.into()),
+            _ => Ok(()),
+        }
     }
 
     /// The last commit we pushed to `name`, if we ever have.
@@ -158,7 +168,7 @@ impl Repo {
     /// it has written to this remote before, and so may not silently recreate
     /// the remote's folder when the drive isn't mounted.
     pub fn remote_head(&self, name: &str) -> Result<Option<String>> {
-        match std::fs::read_to_string(self.remote_ref(name)) {
+        match std::fs::read_to_string(self.remote_ref(name)?) {
             Ok(s) => {
                 let s = s.trim().to_string();
                 Ok(if s.is_empty() { None } else { Some(s) })
@@ -168,11 +178,19 @@ impl Repo {
     }
 
     pub fn set_remote_head(&self, name: &str, hash: &str) -> Result<()> {
-        let p = self.remote_ref(name);
+        let p = self.remote_ref(name)?;
         if let Some(dir) = p.parent() {
             std::fs::create_dir_all(dir)?;
         }
         std::fs::write(p, hash.as_bytes())?;
         Ok(())
     }
+}
+
+/// A remote name is a single, ordinary file name: no separators, not `.` or `..`.
+pub fn valid_remote_name(name: &str) -> Result<()> {
+    if name.is_empty() || name == "." || name == ".." || name.contains(['/', '\\', '\0']) {
+        bail!("`{name}` can't be a remote name - use a plain word like `origin` or `phone`");
+    }
+    Ok(())
 }

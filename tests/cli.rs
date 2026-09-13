@@ -659,6 +659,134 @@ fn push_offers_to_fix_a_name_the_drive_cannot_store() {
     assert!(warn.contains('⏎') || warn.is_empty(), "got: {warn}");
 }
 
+// --- nothing is lost --------------------------------------------------------
+
+#[test]
+fn adapt_never_deletes_a_local_file_the_mirror_never_had() {
+    let sb = Sandbox::new();
+    sb.write("Music/a.mp3", "a");
+    sb.commit("c1");
+    sb.ok(&["remote", "add", "drive", &sb.url("drive")]);
+    sb.ok(&["push", "drive"]);
+
+    sb.write("Music/only-here.mp3", "committed, never pushed");
+    sb.commit("c2");
+    std::fs::write(sb.at("drive/Music/byhand.mp3"), "dropped on the drive").unwrap();
+    sb.ok(&["adapt", "drive"]);
+
+    assert_eq!(
+        sb.read("Music/only-here.mp3"),
+        "committed, never pushed",
+        "adapt deleted a file the mirror never had"
+    );
+    assert_eq!(
+        sb.read("Music/byhand.mp3"),
+        "dropped on the drive",
+        "adapt should still bring in what changed on the drive"
+    );
+}
+
+#[test]
+fn pull_refuses_to_drop_commits_the_remote_does_not_have() {
+    let sb = Sandbox::new();
+    sb.write("Music/a.mp3", "v1");
+    sb.commit("c1");
+    sb.ok(&["remote", "add", "drive", &sb.url("drive")]);
+    sb.ok(&["push", "drive"]);
+
+    sb.write("Music/a.mp3", "version two, longer");
+    sb.commit("c2");
+    let head = sb.head();
+    sb.fails(&["pull", "drive"]);
+
+    assert_eq!(sb.head(), head, "pull moved HEAD past an unpushed commit");
+    assert_eq!(
+        sb.read("Music/a.mp3"),
+        "version two, longer",
+        "pull overwrote the unpushed version"
+    );
+}
+
+#[test]
+fn restore_refuses_bytes_edited_on_the_mirror() {
+    let sb = Sandbox::new();
+    sb.write("Music/a.mp3", "version one");
+    sb.commit("c1");
+    sb.ok(&["remote", "add", "drive", &sb.url("drive")]);
+    sb.ok(&["push", "drive"]);
+
+    // The same size, so the edit is not drift and nothing else would catch it.
+    std::fs::write(sb.at("drive/Music/a.mp3"), "TAMPERED!!!").unwrap();
+    std::fs::remove_file(sb.repo.join("Music/a.mp3")).unwrap();
+    sb.fails(&["restore", "Music/a.mp3", "--remote", "drive"]);
+
+    assert!(
+        !sb.exists("Music/a.mp3"),
+        "restore wrote bytes that are not the committed version"
+    );
+}
+
+#[test]
+fn push_refuses_a_mirror_whose_history_this_repo_does_not_have() {
+    let sb = Sandbox::new();
+    sb.write("Music/a.mp3", "a");
+    sb.commit("base");
+    sb.ok(&["remote", "add", "drive", &sb.url("drive")]);
+    sb.ok(&["push", "drive"]);
+
+    // A second machine pulls the drive, commits, and pushes first.
+    let pc2 = sb.at("pc2");
+    std::fs::create_dir_all(&pc2).unwrap();
+    let run = |args: &[&str]| {
+        let out = Command::new(env!("CARGO_BIN_EXE_stowe"))
+            .args(args)
+            .current_dir(&pc2)
+            .output()
+            .unwrap();
+        assert!(
+            out.status.success(),
+            "pc2 `stowe {}` failed:\n{}",
+            args.join(" "),
+            String::from_utf8_lossy(&out.stderr)
+        );
+    };
+    run(&["init"]);
+    run(&["remote", "add", "drive", &sb.url("drive")]);
+    run(&["pull", "drive"]);
+    std::fs::write(pc2.join("Music/desk.mp3"), "desk").unwrap();
+    run(&["add", "-A"]);
+    run(&["commit", "-m", "desk"]);
+    run(&["push", "drive"]);
+
+    sb.write("Music/laptop.mp3", "laptop");
+    sb.commit("laptop");
+    sb.fails(&["push", "drive"]);
+    assert!(
+        sb.at("drive/Music/desk.mp3").exists(),
+        "a push rewound a mirror past a commit this repo never had"
+    );
+    sb.ok(&["push", "drive", "--force"]);
+}
+
+#[test]
+fn convert_to_backup_leaves_untracked_folders_on_the_drive() {
+    let sb = Sandbox::new();
+    sb.write("Music/a.mp3", "a");
+    sb.commit("c1");
+    sb.ok(&["remote", "add", "drive", &sb.url("drive")]);
+    sb.ok(&["push", "drive"]);
+
+    std::fs::create_dir_all(sb.at("drive/Not tracked")).unwrap();
+    std::fs::write(sb.at("drive/Not tracked/keep.doc"), "not stowe's").unwrap();
+    sb.ok(&["convert", "drive", "--to", "backup"]);
+
+    assert_eq!(
+        std::fs::read_to_string(sb.at("drive/Not tracked/keep.doc")).unwrap(),
+        "not stowe's",
+        "convert deleted a folder stowe never tracked"
+    );
+}
+
 // --- helpers ----------------------------------------------------------------
 
 fn walk_files(dir: &Path) -> Vec<PathBuf> {

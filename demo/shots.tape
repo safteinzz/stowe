@@ -31,7 +31,7 @@ Sleep 3s
 # `exec`, so a stage that refuses to open takes the terminal with it: without it
 # the script exits, the outer shell survives, and every keystroke after this
 # lands in the *real* home - which is how a README image ends up showing
-# somebody's actual connections.
+# somebody's actual files.
 Type "exec ./stage.sh shell"
 Enter
 Sleep 2s

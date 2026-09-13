@@ -61,14 +61,15 @@ pub fn run(remotes: &[String], force: bool) -> Result<()> {
                     short(&head)
                 );
             }
-            _ => push_objects(&repo, name, url)?,
+            _ => push_objects(&repo, name, url, force)?,
         }
     }
     Ok(())
 }
 
 /// Push to an object-store (non-local) remote: content-addressed blobs + history.
-pub(crate) fn push_objects(repo: &Repo, name: &str, url: &str) -> Result<()> {
+/// `force` replaces a history the remote has that this repo doesn't.
+pub(crate) fn push_objects(repo: &Repo, name: &str, url: &str, force: bool) -> Result<()> {
     let history = repo.history()?;
     let head = history[0].0.clone();
     let head_commit = &history[0].1;
@@ -100,6 +101,17 @@ pub(crate) fn push_objects(repo: &Repo, name: &str, url: &str) -> Result<()> {
     }
 
     let backend = remote::open(url)?;
+    if !force && backend.exists("refs/main")? {
+        let theirs = String::from_utf8(backend.get_bytes("refs/main")?)?;
+        let theirs = theirs.trim();
+        if !history.iter().any(|(h, _)| h == theirs) {
+            bail!(
+                "remote `{name}` is at commit {}, which this repo doesn't have - `stowe pull \
+                 {name}` first, or re-run with --force to replace its history with this one",
+                short(theirs)
+            );
+        }
+    }
     let new_objects = backend.put_files(to_upload)?;
 
     let mut new_commits = 0;

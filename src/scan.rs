@@ -1,6 +1,6 @@
 //! Scanning the working tree into a manifest, and diffing two manifests.
 
-use anyhow::Result;
+use anyhow::{Context, Result, bail};
 use rayon::prelude::*;
 use std::collections::HashMap;
 use std::io::{BufReader, IsTerminal, Read, Write};
@@ -69,6 +69,84 @@ pub fn rel_path(root: &std::path::Path, abs: &std::path::Path) -> String {
         .replace('\\', "/")
 }
 
+/// [`rel_path`] for a file that is about to be recorded. A manifest holds
+/// UTF-8, and a lossy spelling would name a file that doesn't exist, so a name
+/// that isn't UTF-8 is refused instead.
+pub fn recordable_path(root: &std::path::Path, abs: &std::path::Path) -> Result<String> {
+    let rel = abs.strip_prefix(root).unwrap_or(abs);
+    match rel.to_str() {
+        Some(s) => Ok(s.replace('\\', "/")),
+        None => bail!(
+            "`{}` isn't a valid UTF-8 name, so stowe can't record it - rename it",
+            rel.to_string_lossy()
+        ),
+    }
+}
+
+/// Write `dest` from `src` through a temporary file beside it, and only rename
+/// it into place when the bytes hash to `want`. A copy cut short, or bytes
+/// edited on a remote since they were recorded, never land under a name that
+/// claims to be that version. Returns `false`, writing nothing, on a mismatch.
+pub fn copy_verified(src: &std::path::Path, dest: &std::path::Path, want: &str) -> Result<bool> {
+    let mut reader = BufReader::new(std::fs::File::open(src)?);
+    let mut landing = Landing::create(dest, want)?;
+    let mut buf = vec![0u8; 1 << 20];
+    loop {
+        let n = reader.read(&mut buf)?;
+        if n == 0 {
+            break;
+        }
+        landing.write(&buf[..n])?;
+    }
+    landing.finish()
+}
+
+/// A file being written under a temporary name, hashed as it goes; see
+/// [`copy_verified`].
+pub struct Landing {
+    tmp: std::path::PathBuf,
+    dest: std::path::PathBuf,
+    file: std::fs::File,
+    hasher: blake3::Hasher,
+    want: String,
+}
+
+impl Landing {
+    pub fn create(dest: &std::path::Path, want: &str) -> Result<Landing> {
+        let parent = dest.parent().unwrap_or(std::path::Path::new("."));
+        std::fs::create_dir_all(parent)?;
+        let name = dest.file_name().unwrap_or_default().to_string_lossy();
+        let tmp = parent.join(format!(".{name}.stowe-part"));
+        let file = std::fs::File::create(&tmp)
+            .with_context(|| format!("writing {}", crate::paths::short(dest)))?;
+        Ok(Landing {
+            tmp,
+            dest: dest.to_path_buf(),
+            file,
+            hasher: blake3::Hasher::new(),
+            want: want.to_string(),
+        })
+    }
+
+    pub fn write(&mut self, buf: &[u8]) -> Result<()> {
+        self.hasher.update(buf);
+        self.file
+            .write_all(buf)
+            .with_context(|| format!("writing {}", crate::paths::short(&self.dest)))
+    }
+
+    pub fn finish(self) -> Result<bool> {
+        drop(self.file);
+        if self.hasher.finalize().to_hex().as_str() != self.want {
+            let _ = std::fs::remove_file(&self.tmp);
+            return Ok(false);
+        }
+        std::fs::rename(&self.tmp, &self.dest)
+            .with_context(|| format!("writing {}", crate::paths::short(&self.dest)))?;
+        Ok(true)
+    }
+}
+
 /// Build a single manifest [`Entry`] for an existing file (used by per-file
 /// `add`). `fingerprint` decodes audio to record its fingerprint, same as a
 /// full scan.
@@ -89,7 +167,7 @@ pub fn entry_for(
         None
     };
     Ok(Entry {
-        path: rel_path(root, abs),
+        path: recordable_path(root, abs)?,
         size: meta.len(),
         mtime,
         hash: hash_file(abs)?,
@@ -181,13 +259,13 @@ fn collect_files(
         let ft = entry.file_type()?;
         if ft.is_dir() {
             let abs = entry.path();
-            if ignore.is_ignored(&rel_path(root, &abs), true) {
+            if ignore.is_ignored(&recordable_path(root, &abs)?, true) {
                 continue;
             }
             collect_files(root, &abs, out, prog, ignore)?;
         } else if ft.is_file() {
             let abs = entry.path();
-            let rel = rel_path(root, &abs);
+            let rel = recordable_path(root, &abs)?;
             if ignore.is_ignored(&rel, false) {
                 continue;
             }
@@ -231,7 +309,9 @@ pub fn scan(repo: &Repo, cache_source: &Manifest, fingerprint: bool) -> Result<M
     // and - because it goes through a single FUSE daemon on mounted drives -
     // parallelising it only adds contention, so the walk stays sequential.
     let mut found: Vec<Found> = Vec::new();
-    let ignore = Ignore::load(&repo.root);
+    let staged = repo.read_index()?.unwrap_or_default();
+    let ignore = Ignore::load(&repo.root)
+        .keeping(cache_source.iter().chain(&staged).map(|e| e.path.as_str()));
     collect_files(&repo.root, &repo.root, &mut found, &prog, &ignore)?;
 
     // Hashing is CPU-bound and per-file independent, so fan it across cores. A
