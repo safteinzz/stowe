@@ -204,7 +204,8 @@ down_quiet() {
 # images are a build output, and a build output that depends on whose machine
 # ran it is not reproducible. A username is not a leak, but `user@host` is the
 # same for everyone, and it is the same string in all six rigs so the frames
-# match. No tape sets a theme either, so every frame is VHS's default black.
+# match. Every tape also sets the same theme and font (Catppuccin Mocha,
+# JetBrainsMono NF).
 write_demorc() {
   cat > "$STAGE/.demorc" <<'EOF'
 PS1='\[\e[38;5;114m\]user@host\[\e[0m\]:\[\e[38;5;110m\]\w\[\e[0m\]\$ '
