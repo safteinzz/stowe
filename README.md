@@ -72,12 +72,13 @@ stowe remote add offsite s3://example-archive/stowe --format backup  # a backup
 stowe convert drive                                                  # flip one in place
 ```
 
-- **mirror** (`local:`): real, browsable folders on a drive or phone.
-- **backup** (`s3://`, or `--format backup`): deduped content-addressed blobs.
-  Compact, not browsable.
+```
+mirror   local:, real browsable folders on a drive or phone
+backup   s3:// or --format backup, deduped blobs, compact but not browsable
+```
 
-Push to as many as you like. Each tracks its own progress, and `stowe convert`
-flips a remote between the two **in place**, no re-upload.
+Push to as many as you like, each tracking its own progress, and `stowe convert`
+flips a remote between the two **in place**, with no re-upload.
 
 ## It will not overwrite what it did not put there
 
@@ -104,6 +105,17 @@ stowe restore -A --from <C>    # ...or a whole snapshot, as of commit C
 
 A command that takes a remote uses `origin` when none is named, and
 `stowe <command> --help` has every flag.
+
+Every command prints for people rather than for a pipe, and a failure names
+itself on stderr and exits non-zero.
+
+## Where it keeps things
+
+```
+.stowe/            the repo: history, what is staged and your remotes
+.stoweignore       the paths every scan skips
+<remote>/.stowe/   the remote's history, and every replaced or deleted version
+```
 
 ## What it ignores
 
