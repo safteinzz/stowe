@@ -33,8 +33,9 @@ stowe push drive                      # copy it there
 ![stowe istatus staging one new file, then the rest, and committing them through a form](https://gitlab.com/safteinzz/stowe/-/raw/main/readme-assets/status.gif)
 
 ```bash
-stowe istatus  # stage, unstage and commit in one screen
-stowe status   # what changed since the last commit
+stowe istatus    # stage, unstage and commit in one screen
+stowe status     # what changed since the last commit
+stowe status -s  # the same in one line, for a shell prompt
 ```
 
 ![stowe status after two folders were moved and a song retitled: six renames, each with the changed characters highlighted, two untracked files, and a summary line reading +2 -0 ~0 and 6 moved](https://gitlab.com/safteinzz/stowe/-/raw/main/readme-assets/status.png)
@@ -159,7 +160,8 @@ stowe remote remove <NAME>     # forget a remote here, never touching it
 A command that takes a remote uses `origin` when none is named,
 `stowe <command> --help` has every flag, and `?` in any screen lists every key.
 
-Every command prints for people rather than for a pipe, and a failure names
+Every command prints for people rather than for a pipe, but for `status -s`,
+whose one line keeps a fixed form for a prompt or a script. A failure names
 itself on stderr and exits non-zero.
 
 ## Where it keeps things

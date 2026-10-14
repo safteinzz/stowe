@@ -60,8 +60,11 @@ A `.stoweignore` at the repo root keeps paths out of every scan, local and
 remote: bare names match anywhere, a trailing `/` means directories only, and a
 pattern with a `/` is anchored at the root.
 
-Every command prints for people rather than for a pipe, and a failure names
-itself on stderr and exits non-zero; `search` finding nothing is one.
+Every command prints for people rather than for a pipe, but for `status -s`,
+and a failure names itself on stderr and exits non-zero; `search` finding
+nothing is one. `status -s` prints one line in a fixed form for a prompt or a
+script: +N added, -N removed, ~N changed, ⇄N moved since the last commit and
+↑N commits a remote lacks, in that order, each left out at zero.
 `repos` marks ✚N files changed since the last commit and ↑N commits a remote
 lacks, then each remote as `in sync`, `N behind`, `never pushed` or `diverged`.
 `search` names what a commit did to a file: added, changed, moved or removed.
@@ -104,7 +107,13 @@ enum Cmd {
     /// Create a new repo (.stowe/) in the current folder
     Init,
     /// Show what changed since the last commit
-    Status,
+    ///   -s                        one line for a shell prompt: +added -removed ~changed ⇄moved ↑unpushed
+    #[command(verbatim_doc_comment)]
+    Status {
+        /// Print one line for a shell prompt instead: `+N -N ~N ⇄N ↑N`, zero counts left out, and an empty line when clean and pushed
+        #[arg(short, long)]
+        short: bool,
+    },
     /// Stage files for the next commit  [PATHS]...
     ///   -A                        stage the entire working tree
     #[command(verbatim_doc_comment)]
@@ -264,7 +273,7 @@ fn main() -> Result<()> {
     };
     match cli.cmd {
         Cmd::Init => commands::init::run(),
-        Cmd::Status => commands::status::run(),
+        Cmd::Status { short } => commands::status::run(short),
         Cmd::Add { paths, all } => commands::add::run(paths, all),
         Cmd::Unstage { paths } => commands::unstage::run(paths),
         Cmd::Commit { message } => commands::commit::run(&message),

@@ -102,15 +102,21 @@ pub struct State {
 impl State {
     /// The most commits any remote lacks, which is what `↑` marks.
     pub fn unpushed(&self) -> usize {
-        self.remotes
-            .iter()
-            .map(|(_, b)| match b {
-                Behind::By(n) => *n,
-                Behind::Never | Behind::Elsewhere => self.commits,
-            })
-            .max()
-            .unwrap_or(self.commits)
+        unpushed(&self.remotes, self.commits)
     }
+}
+
+/// The most of `commits` any of `remotes` lacks, all of them when there is no
+/// remote to push to.
+pub fn unpushed(remotes: &[(String, Behind)], commits: usize) -> usize {
+    remotes
+        .iter()
+        .map(|(_, b)| match b {
+            Behind::By(n) => *n,
+            Behind::Never | Behind::Elsewhere => commits,
+        })
+        .max()
+        .unwrap_or(commits)
 }
 
 /// Read `path`'s state. This walks its working tree, hashing only what changed
