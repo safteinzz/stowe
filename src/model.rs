@@ -66,6 +66,11 @@ pub(crate) fn under_prefix(path: &str, prefix: &str) -> bool {
     prefix.is_empty() || path == prefix || path.starts_with(&format!("{prefix}/"))
 }
 
+/// `1 file`, `3 files`: `n` and the noun that agrees with it.
+pub(crate) fn count(n: usize, one: &str, many: &str) -> String {
+    format!("{n} {}", if n == 1 { one } else { many })
+}
+
 pub(crate) fn short(hash: &str) -> &str {
     &hash[..hash.len().min(10)]
 }

@@ -10,6 +10,15 @@ use crate::time::now;
 
 pub fn run(message: &str) -> Result<()> {
     let repo = Repo::find()?;
+    let (hash, d) = commit(&repo, message)?;
+    outln!("committed {} \"{message}\"", short(&hash));
+    scan::print_diff(&d);
+    outln!("\n(remember: `stowe push` to back the file contents up to a remote)");
+    Ok(())
+}
+
+/// Record what is staged as the new head. Returns its hash and what changed.
+pub fn commit(repo: &Repo, message: &str) -> Result<(String, scan::Diff)> {
     let staged = repo
         .read_index()?
         .ok_or_else(|| anyhow!("nothing staged - run `stowe add -A` first"))?;
@@ -27,8 +36,5 @@ pub fn run(message: &str) -> Result<()> {
     let hash = repo.write_commit(&commit)?;
     repo.set_head(&hash)?;
     repo.clear_index()?;
-    println!("committed {} \"{message}\"", short(&hash));
-    scan::print_diff(&d);
-    println!("\n(remember: `stowe push` to back the file contents up to a remote)");
-    Ok(())
+    Ok((hash, d))
 }

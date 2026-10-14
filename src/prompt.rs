@@ -4,7 +4,7 @@
 /// non-interactive stdin, so scripts aren't blocked.
 pub(crate) fn confirm_default_yes(prompt: &str) -> bool {
     use std::io::Write;
-    print!("{prompt} [Y/n] ");
+    out!("{prompt} [Y/n] ");
     std::io::stdout().flush().ok();
     let mut input = String::new();
     if std::io::stdin().read_line(&mut input).is_err() {

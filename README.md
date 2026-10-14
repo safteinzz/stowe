@@ -30,11 +30,14 @@ stowe push drive                      # copy it there
 
 ## See what changed
 
-![stowe status after two folders were moved and a song retitled: six renames, each with the changed characters highlighted, two untracked files, and a summary line reading +2 -0 ~0 and 6 moved](https://gitlab.com/safteinzz/stowe/-/raw/main/readme-assets/status.png)
+![stowe istatus staging one new file, then the rest, and committing them through a form](https://gitlab.com/safteinzz/stowe/-/raw/main/readme-assets/status.gif)
 
 ```bash
+stowe istatus  # stage, unstage and commit in one screen
 stowe status   # what changed since the last commit
 ```
+
+![stowe status after two folders were moved and a song retitled: six renames, each with the changed characters highlighted, two untracked files, and a summary line reading +2 -0 ~0 and 6 moved](https://gitlab.com/safteinzz/stowe/-/raw/main/readme-assets/status.png)
 
 Move a folder, rename a file, drop new ones in. stowe works out what actually
 happened instead of reporting a wall of deletes and adds, and marks only the
@@ -61,6 +64,56 @@ wire. Reorganising a terabyte archive stays cheap.
 A mirror is your real tree at real paths. Plug the drive into anything, open the
 folders, play or edit what is inside. The history lives in `.stowe/` beside it,
 so one drive is both a working copy and a time machine.
+
+## Read the history, file by file
+
+![stowe ilog opening the reorganisation, its moves marked where the names changed, then one photo's versions across the move](https://gitlab.com/safteinzz/stowe/-/raw/main/readme-assets/history.gif)
+
+Legend: `+` new · `~` changed · `⇄` moved · `-` removed · `↑` on no remote yet
+
+```bash
+stowe ilog     # commits, their changes, each file's versions; ↵ restores one
+stowe log      # history, newest first
+```
+
+![stowe log listing four commits](https://gitlab.com/safteinzz/stowe/-/raw/main/readme-assets/history-plain.png)
+
+A file is followed across every move, so its versions read as one list
+whatever it was called when each was committed.
+
+## Find a file by any name it had
+
+![stowe iscan finding a song under its old and new name, then opening the commit that renamed it](https://gitlab.com/safteinzz/stowe/-/raw/main/readme-assets/scan.gif)
+
+```bash
+stowe iscan            # type part of a name; ↵ opens the commit that touched it
+stowe search <PATTERN> # every commit that added, changed, moved or removed a match
+```
+
+![stowe search harbor listing the commit that renamed the song and the one that added it](https://gitlab.com/safteinzz/stowe/-/raw/main/readme-assets/scan-plain.png)
+
+## Know what each remote is missing
+
+![stowe iremote showing the drive one commit behind with the two files a push would send, pushing them, then the offsite store that was never pushed to](https://gitlab.com/safteinzz/stowe/-/raw/main/readme-assets/remote.gif)
+
+```bash
+stowe iremote  # every remote and what a push would send; ↵ pushes, a adapts, m mounts
+stowe remote   # each remote's address and format
+```
+
+The plan is worked out from what each remote was last sent, so it shows
+without plugging the drive in.
+
+## Every archive at once
+
+![stowe irepos listing two archives with their changes and remotes, then opening one's history](https://gitlab.com/safteinzz/stowe/-/raw/main/readme-assets/repos.gif)
+
+```bash
+stowe irepos [path]   # every archive under a folder; ↵ opens its history
+stowe repos [path]    # the same list, printed
+```
+
+![stowe repos listing two archives, their changes and where each remote stands](https://gitlab.com/safteinzz/stowe/-/raw/main/readme-assets/repos-plain.png)
 
 ## Two shapes of remote
 
@@ -96,15 +149,15 @@ and removes what was dropped on the drive by hand.
 ## Commands
 
 ```bash
-stowe unstage                  # drop what is staged, files untouched
-stowe log                      # history, newest first
+stowe unstage [paths]          # drop what is staged, files untouched
 stowe pull drive               # rebuild the working tree from a remote
 stowe restore <paths>          # bring back committed files from a remote
 stowe restore -A --from <C>    # ...or a whole snapshot, as of commit C
+stowe remote remove <NAME>     # forget a remote here, never touching it
 ```
 
-A command that takes a remote uses `origin` when none is named, and
-`stowe <command> --help` has every flag.
+A command that takes a remote uses `origin` when none is named,
+`stowe <command> --help` has every flag, and `?` in any screen lists every key.
 
 Every command prints for people rather than for a pipe, and a failure names
 itself on stderr and exits non-zero.

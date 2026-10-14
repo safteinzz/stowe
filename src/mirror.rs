@@ -65,24 +65,85 @@ pub struct SyncReport {
     pub modified: usize,
     pub removed: usize,
     pub new_commits: usize,
+    /// Files a forced push removed because they were put on the mirror by hand.
+    pub cleared: Vec<String>,
 }
 
 /// Changes found on the mirror that stowe didn't make (drift).
-#[derive(Default)]
-struct Drift {
+#[derive(Default, Debug)]
+pub struct Drift {
     /// On the mirror but not in its recorded snapshot (e.g. copy-pasted in).
-    foreign: Vec<String>,
+    pub foreign: Vec<String>,
     /// In the recorded snapshot but gone from the mirror (deleted by hand).
-    missing: Vec<String>,
+    pub missing: Vec<String>,
     /// Present but a different size than recorded (edited in place).
-    changed: Vec<String>,
+    pub changed: Vec<String>,
 }
+
+/// The error a push or a convert stops with when the mirror has drift, carrying
+/// the drift so the caller can show it: a terminal prints it, a TUI lists it in
+/// the box that offers `--force`.
+#[derive(Debug)]
+pub struct Drifted {
+    pub drift: Drift,
+    message: String,
+}
+
+impl std::fmt::Display for Drifted {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for Drifted {}
+
+/// The error a push stops with when the remote is at a commit `theirs` this
+/// repo does not have, which only `--force` pushes over.
+#[derive(Debug)]
+pub struct Diverged {
+    pub theirs: String,
+    message: String,
+}
+
+impl Diverged {
+    pub fn new(theirs: &str, message: String) -> Diverged {
+        Diverged {
+            theirs: theirs.to_string(),
+            message,
+        }
+    }
+}
+
+impl std::fmt::Display for Diverged {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for Diverged {}
+
+/// The error an adapt stops with when files changed on both sides, naming them.
+#[derive(Debug)]
+pub struct Conflicts {
+    pub paths: Vec<String>,
+}
+
+impl std::fmt::Display for Conflicts {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(
+            "nothing adapted - commit or restore those files here first, so a change on one \
+             side doesn't overwrite the other",
+        )
+    }
+}
+
+impl std::error::Error for Conflicts {}
 
 impl Drift {
     fn is_empty(&self) -> bool {
         self.foreign.is_empty() && self.missing.is_empty() && self.changed.is_empty()
     }
-    fn report(&self) {
+    pub fn report(&self) {
         use colored::Colorize;
         eprintln!(
             "{}",
@@ -120,12 +181,13 @@ pub fn sync(repo: &Repo, root: &Path, force: bool) -> Result<SyncReport> {
         && !force
         && !history.iter().any(|(c, _)| c == h)
     {
-        bail!(
-            "mirror `{}` is at commit {}, which this repo doesn't have - `stowe pull` it first, \
+        let message = format!(
+            "mirror `{}` is at commit {}, which this repo doesn't have: `stowe pull` it first, \
              or re-run with --force to replace its history with this one",
             crate::paths::short(root),
             short(h)
         );
+        return Err(Diverged::new(h, message).into());
     }
     let remote_manifest: Manifest = match &recorded_head {
         Some(h) => read_commit_files(root, h)?,
@@ -151,19 +213,20 @@ pub fn sync(repo: &Repo, root: &Path, force: bool) -> Result<SyncReport> {
     // Did someone touch the mirror behind stowe's back, in a way this push would
     // clobber? Cheap check: paths + sizes, no hashing. Bail unless --force.
     let drift = detect_drift(&actual, &remote_manifest, target);
+    let mut cleared = Vec::new();
     if !drift.is_empty() {
         if !force {
-            drift.report();
-            bail!(
+            let message = format!(
                 "mirror `{}` has changes made outside stowe - reconcile, or re-run with --force \
                  to overwrite it to match this commit",
                 crate::paths::short(root)
             );
+            return Err(Drifted { drift, message }.into());
         }
         for p in &drift.foreign {
             remove_file_and_empty_dirs(root, &root.join(p))?;
             actual.remove(p);
-            eprintln!("removed from mirror: {}", crate::names::display(p));
+            cleared.push(p.clone());
         }
     }
 
@@ -330,6 +393,7 @@ pub fn sync(repo: &Repo, root: &Path, force: bool) -> Result<SyncReport> {
         modified: d.modified.len(),
         removed: d.removed.len(),
         new_commits,
+        cleared,
     })
 }
 
@@ -678,6 +742,40 @@ impl AdaptReport {
 /// still `commit`s to record it. To stay cheap we trust the mirror's recorded
 /// hashes for same-path/same-size files and only hash what actually differs.
 pub fn adapt(repo: &Repo, root: &Path) -> Result<AdaptReport> {
+    let plan = plan_adapt(repo, root)?;
+    apply_adapt(repo, root, plan)
+}
+
+/// What [`adapt`] would do to the working tree, worked out before any of it,
+/// so a screen can ask first about the files it takes away.
+pub struct AdaptPlan {
+    renames: Vec<(String, String)>,
+    deletes: Vec<String>,
+    copies: Vec<String>,
+    /// Files whose bytes here get replaced by the mirror's.
+    replaced: Vec<String>,
+    /// The hash each copied path must arrive with.
+    want: HashMap<String, String>,
+    pub report: AdaptReport,
+}
+
+impl AdaptPlan {
+    /// The local files the adapt deletes or overwrites, which the mirror no
+    /// longer holds as they are here, so this may be their last copy.
+    pub fn loses(&self) -> Vec<String> {
+        let mut out: Vec<String> = self
+            .deletes
+            .iter()
+            .map(|p| format!("deleted: {p}"))
+            .collect();
+        out.extend(self.replaced.iter().map(|p| format!("replaced: {p}")));
+        out
+    }
+}
+
+/// The first half of [`adapt`]: read both sides and decide, touching nothing.
+/// Files changed on both sides fail with [`Conflicts`].
+pub fn plan_adapt(repo: &Repo, root: &Path) -> Result<AdaptPlan> {
     let recorded: Manifest = match read_ref(root)? {
         Some(h) => read_commit_files(root, &h)?,
         None => Vec::new(),
@@ -733,6 +831,7 @@ pub fn adapt(repo: &Repo, root: &Path) -> Result<AdaptReport> {
     let mut renames: Vec<(&String, &String)> = Vec::new();
     let mut deletes: Vec<&String> = Vec::new();
     let mut copies: Vec<&String> = Vec::new();
+    let mut replaced: Vec<&String> = Vec::new();
     let mut report = AdaptReport::default();
     for (from, to) in &on_mirror.moved {
         let (src, dst) = (local(from)?, local(to)?);
@@ -769,6 +868,7 @@ pub fn adapt(repo: &Repo, root: &Path) -> Result<AdaptReport> {
             Some(h) if Some(h.as_str()) == now(path) => {}
             Some(h) if Some(h.as_str()) == was(path) => {
                 copies.push(path);
+                replaced.push(path);
                 report.modified += 1;
             }
             _ => conflicts.push(path),
@@ -787,29 +887,42 @@ pub fn adapt(repo: &Repo, root: &Path) -> Result<AdaptReport> {
     if !conflicts.is_empty() {
         conflicts.sort();
         conflicts.dedup();
-        eprintln!("changed both here and on the mirror:");
-        for p in &conflicts {
-            eprintln!("  {}", crate::names::display(p));
-        }
-        bail!(
-            "nothing adapted - commit or restore those files here first, so a change on one \
-             side doesn't overwrite the other"
-        );
+        let paths = conflicts.into_iter().cloned().collect();
+        return Err(Conflicts { paths }.into());
     }
+    let owned = |v: Vec<&String>| v.into_iter().cloned().collect::<Vec<String>>();
+    let want = copies
+        .iter()
+        .map(|p| (p.to_string(), now(p).unwrap_or_default().to_string()))
+        .collect();
+    Ok(AdaptPlan {
+        renames: renames
+            .into_iter()
+            .map(|(a, b)| (a.clone(), b.clone()))
+            .collect(),
+        deletes: owned(deletes),
+        copies: owned(copies),
+        replaced: owned(replaced),
+        want,
+        report,
+    })
+}
 
-    for (from, to) in renames {
+/// The second half of [`adapt`]: do what `plan` decided.
+pub fn apply_adapt(repo: &Repo, root: &Path, plan: AdaptPlan) -> Result<AdaptReport> {
+    for (from, to) in &plan.renames {
         let dst = repo.root.join(to);
         ensure_parent(&dst)?;
         std::fs::rename(repo.root.join(from), &dst).with_context(|| {
             format!("moving {} in the working tree", crate::names::display(from))
         })?;
     }
-    for path in deletes {
+    for path in &plan.deletes {
         std::fs::remove_file(repo.root.join(path))
             .with_context(|| format!("removing {}", crate::names::display(path)))?;
     }
-    for path in copies {
-        let want = now(path).unwrap_or_default();
+    for path in &plan.copies {
+        let want = plan.want.get(path).map_or("", String::as_str);
         if !scan::copy_verified(&root.join(path), &repo.root.join(path), want)
             .with_context(|| format!("adopting {} from mirror", crate::names::display(path)))?
         {
@@ -819,7 +932,7 @@ pub fn adapt(repo: &Repo, root: &Path) -> Result<AdaptReport> {
             );
         }
     }
-    Ok(report)
+    Ok(plan.report)
 }
 
 /// Copy the bytes for content `hash` from the mirror into `dest`, checked
@@ -949,12 +1062,12 @@ pub fn mirror_to_backup(repo: &Repo, root: &Path) -> Result<ConvertReport> {
     let mut drift = detect_drift(&mirror_sizes(root, &ignore)?, &manifest, &manifest);
     drift.foreign.clear();
     if !drift.is_empty() {
-        drift.report();
-        bail!(
+        let message = format!(
             "mirror `{}` has changes made outside stowe - `stowe adapt` or `stowe push --force` \
              it before converting",
             crate::paths::short(root)
         );
+        return Err(Drifted { drift, message }.into());
     }
     std::fs::create_dir_all(root.join("objects"))?;
 

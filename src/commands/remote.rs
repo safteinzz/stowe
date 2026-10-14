@@ -31,6 +31,11 @@ pub enum RemoteCmd {
     },
     /// List configured remotes
     List,
+    /// Forget a remote: its config here, never anything on it  <NAME>
+    Remove {
+        /// The remote to forget
+        name: String,
+    },
 }
 
 pub fn run(cmd: Option<RemoteCmd>) -> Result<()> {
@@ -44,32 +49,7 @@ pub fn run(cmd: Option<RemoteCmd>) -> Result<()> {
         }) => {
             crate::repo::valid_remote_name(&name)?;
             let url = absolute_url(&url)?;
-            let mut cfg = repo.config()?;
-            match &format {
-                Some(fmt) => {
-                    if fmt == "mirror" && mirror::local_root(&url).is_none() {
-                        bail!("`mirror` format needs a local path - {url} can't be a mirror");
-                    }
-                    cfg.formats.insert(name.clone(), fmt.clone());
-                }
-                // No override → fall back to the scheme default.
-                None => {
-                    cfg.formats.remove(&name);
-                }
-            }
-            // A mount command only means something for a path we have to make
-            // exist. An s3 store is reachable on credentials, not on mounting.
-            match &mount {
-                Some(cmd) => {
-                    if mirror::local_root(&url).is_none() {
-                        bail!("--mount only applies to local remotes; {url} has nothing to mount");
-                    }
-                    cfg.mounts.insert(name.clone(), cmd.clone());
-                }
-                None => {
-                    cfg.mounts.remove(&name);
-                }
-            }
+            check(&url, format.as_deref(), mount.as_deref())?;
             // If it's a local drive that isn't plugged in, confirm before saving
             // (you may be adding it ahead of connecting, so default is yes).
             // With a mount command we already know how to reach it, so no prompt.
@@ -78,44 +58,40 @@ pub fn run(cmd: Option<RemoteCmd>) -> Result<()> {
                 if !confirm_default_yes(&format!(
                     "remote `{name}` ({shown}) isn't reachable right now. Add it anyway?"
                 )) {
-                    println!("aborted - remote not added.");
+                    outln!("aborted - remote not added.");
                     return Ok(());
                 }
             }
-            // Pushes to the old location say nothing about the new one, and the
-            // record of them would have push refuse it as a drive gone missing.
-            if cfg
-                .remotes
-                .insert(name.clone(), url.clone())
-                .is_some_and(|old| old != url)
-            {
-                repo.forget_remote_head(&name)?;
-            }
-            repo.save_config(&cfg)?;
-            println!(
+            save(&repo, &name, &url, format.as_deref(), mount.as_deref())?;
+            let cfg = repo.config()?;
+            outln!(
                 "remote `{name}` -> {} ({} format)",
                 crate::paths::short_url(&url),
                 remote_format(&cfg, &name, &url).name()
             );
             if let Some(cmd) = &mount {
-                println!("  mount: {cmd}");
+                outln!("  mount: {cmd}");
             }
+        }
+        Some(RemoteCmd::Remove { name }) => {
+            remove(&repo, &name)?;
+            outln!("forgot remote `{name}`; nothing on it was touched");
         }
         // Bare `stowe remote` and `stowe remote list` both just list.
         None | Some(RemoteCmd::List) => {
             let cfg = repo.config()?;
             if cfg.remotes.is_empty() {
-                println!("no remotes. add one, e.g.:");
-                println!("  stowe remote add origin local:/path/to/backup");
+                outln!("no remotes. add one, e.g.:");
+                outln!("  stowe remote add origin local:/path/to/backup");
             }
             for (name, url) in &cfg.remotes {
-                println!(
+                outln!(
                     "{name}\t{}\t[{}]",
                     crate::paths::short_url(url),
                     remote_format(&cfg, name, url).name()
                 );
                 if let Some(cmd) = cfg.mounts.get(name) {
-                    println!("  mount: {cmd}");
+                    outln!("  mount: {cmd}");
                 }
             }
         }
@@ -123,11 +99,93 @@ pub fn run(cmd: Option<RemoteCmd>) -> Result<()> {
     Ok(())
 }
 
+/// Refuse a format or a mount command that `url` cannot have.
+pub fn check(url: &str, format: Option<&str>, mount: Option<&str>) -> Result<()> {
+    if format == Some("mirror") && mirror::local_root(url).is_none() {
+        bail!("`mirror` format needs a local path, and {url} is not one");
+    }
+    // A mount command only means something for a path we have to make exist.
+    // An s3 store is reachable on credentials, not on mounting.
+    if mount.is_some() && mirror::local_root(url).is_none() {
+        bail!("--mount only applies to local remotes; {url} has nothing to mount");
+    }
+    Ok(())
+}
+
+/// Write remote `name` to the config: its URL, its format (None for the
+/// scheme's default) and its mount command. Asks nothing.
+pub fn save(
+    repo: &Repo,
+    name: &str,
+    url: &str,
+    format: Option<&str>,
+    mount: Option<&str>,
+) -> Result<()> {
+    crate::repo::valid_remote_name(name)?;
+    check(url, format, mount)?;
+    let mut cfg = repo.config()?;
+    match format {
+        Some(fmt) => cfg.formats.insert(name.to_string(), fmt.to_string()),
+        None => cfg.formats.remove(name),
+    };
+    match mount {
+        Some(cmd) => cfg.mounts.insert(name.to_string(), cmd.to_string()),
+        None => cfg.mounts.remove(name),
+    };
+    // Pushes to the old location say nothing about the new one, and the
+    // record of them would have push refuse it as a drive gone missing.
+    if cfg
+        .remotes
+        .insert(name.to_string(), url.to_string())
+        .is_some_and(|old| old != url)
+    {
+        repo.forget_remote_head(name)?;
+    }
+    repo.save_config(&cfg)
+}
+
+/// Forget remote `name` here: its URL, format, mount command and the record of
+/// what was pushed to it. Nothing on the remote is touched.
+pub fn remove(repo: &Repo, name: &str) -> Result<()> {
+    let mut cfg = repo.config()?;
+    if cfg.remotes.remove(name).is_none() {
+        bail!("no remote named `{name}`: `stowe remote` lists them");
+    }
+    cfg.formats.remove(name);
+    cfg.mounts.remove(name);
+    repo.save_config(&cfg)?;
+    repo.forget_remote_head(name)
+}
+
+/// Call remote `old` `new`, keeping the record of what was pushed to it.
+pub fn rename(repo: &Repo, old: &str, new: &str) -> Result<()> {
+    crate::repo::valid_remote_name(new)?;
+    let mut cfg = repo.config()?;
+    if cfg.remotes.contains_key(new) {
+        bail!("a remote named `{new}` already exists, so pick another name");
+    }
+    let Some(url) = cfg.remotes.remove(old) else {
+        bail!("no remote named `{old}`: `stowe remote` lists them");
+    };
+    cfg.remotes.insert(new.to_string(), url);
+    if let Some(f) = cfg.formats.remove(old) {
+        cfg.formats.insert(new.to_string(), f);
+    }
+    if let Some(m) = cfg.mounts.remove(old) {
+        cfg.mounts.insert(new.to_string(), m);
+    }
+    repo.save_config(&cfg)?;
+    if let Some(head) = repo.remote_head(old)? {
+        repo.set_remote_head(new, &head)?;
+    }
+    repo.forget_remote_head(old)
+}
+
 /// A local remote typed as a relative path, made absolute against the current
 /// directory, which is where the person typing it meant; stored relative, it
 /// would name a different place from every other directory. `..` is resolved
 /// by name, since the drive may not be mounted yet.
-fn absolute_url(url: &str) -> Result<String> {
+pub fn absolute_url(url: &str) -> Result<String> {
     let Some(root) = mirror::local_root(url) else {
         return Ok(url.to_string());
     };

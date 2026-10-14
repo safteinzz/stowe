@@ -96,7 +96,7 @@ pub fn run(name: &str) -> Result<()> {
     repo.set_head(&remote_head)?;
     repo.clear_index()?;
 
-    println!(
+    outln!(
         "pulled from `{name}`: now at {} ({new_commits} new commits, {} files written)",
         short(&remote_head),
         wanted.len()

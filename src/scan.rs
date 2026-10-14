@@ -5,6 +5,7 @@ use rayon::prelude::*;
 use std::collections::HashMap;
 use std::io::{BufReader, IsTerminal, Read, Write};
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::UNIX_EPOCH;
 use walkdir::WalkDir;
 
@@ -12,33 +13,55 @@ use crate::ignore::Ignore;
 use crate::model::{Entry, Manifest};
 use crate::repo::Repo;
 
+/// The progress line a TUI draws in its footer, once it has taken the terminal
+/// over: from then on every [`Progress`] writes here instead of to stderr,
+/// which would print over the screen.
+static SCREEN: OnceLock<Arc<Mutex<String>>> = OnceLock::new();
+
+/// Send every later [`Progress`] to the line this returns rather than stderr.
+pub fn progress_to_screen() -> Arc<Mutex<String>> {
+    SCREEN.get_or_init(Arc::default).clone()
+}
+
 /// A one-line, in-place progress indicator for the long phases of a scan.
 ///
 /// Big trees make `status`/`add` sit for a few seconds; without a sign of life
 /// that reads as a hang. So we stream a live count to *stderr*, and only when
 /// it's a terminal - piped/redirected output stays byte-for-byte clean, and the
 /// real result always goes to stdout. Ticking is throttled by the caller so the
-/// print cost never shows up in the timing.
+/// print cost never shows up in the timing. Under a TUI the count goes to the
+/// line [`progress_to_screen`] handed it.
 pub struct Progress {
     show: bool,
+    screen: Option<Arc<Mutex<String>>>,
 }
 
 impl Progress {
     pub fn new() -> Self {
+        let screen = SCREEN.get().cloned();
         Progress {
-            show: std::io::stderr().is_terminal(),
+            show: screen.is_none() && std::io::stderr().is_terminal(),
+            screen,
         }
     }
     /// Overwrite the current line with `msg` (only if attached to a terminal).
     pub fn tick(&self, msg: &str) {
-        if self.show {
+        if let Some(line) = &self.screen {
+            if let Ok(mut line) = line.lock() {
+                *line = msg.to_string();
+            }
+        } else if self.show {
             eprint!("\r\x1b[K{msg}");
             let _ = std::io::stderr().flush();
         }
     }
     /// Wipe the progress line so it doesn't linger above the real output.
     pub fn clear(&self) {
-        if self.show {
+        if let Some(line) = &self.screen {
+            if let Ok(mut line) = line.lock() {
+                line.clear();
+            }
+        } else if self.show {
             eprint!("\r\x1b[K");
             let _ = std::io::stderr().flush();
         }
@@ -58,6 +81,40 @@ pub fn hash_file(path: &std::path::Path) -> Result<String> {
         hasher.update(&buf[..n]);
     }
     Ok(hasher.finalize().to_hex().to_string())
+}
+
+/// `arg` as typed, made absolute against `cwd` and resolved through symlinks,
+/// refused unless it is inside `root` (itself resolved). A path that no longer
+/// exists, as a deletion being staged, is resolved through its parent.
+pub fn resolve_arg(
+    root: &std::path::Path,
+    cwd: &std::path::Path,
+    arg: &std::path::Path,
+) -> Result<std::path::PathBuf> {
+    let lexical = if arg.is_absolute() {
+        arg.to_path_buf()
+    } else {
+        cwd.join(arg)
+    };
+    let abs = match lexical.canonicalize() {
+        Ok(c) => c,
+        Err(_) => {
+            let parent = lexical
+                .parent()
+                .unwrap_or_else(|| std::path::Path::new("."));
+            let name = lexical
+                .file_name()
+                .ok_or_else(|| anyhow::anyhow!("bad path: {}", arg.display()))?;
+            parent
+                .canonicalize()
+                .with_context(|| format!("no such path: {}", arg.display()))?
+                .join(name)
+        }
+    };
+    if abs.strip_prefix(root).is_err() {
+        bail!("{} is outside the repo", arg.display());
+    }
+    Ok(abs)
 }
 
 /// Repo-relative, forward-slash path string for `abs` under `root`. Purely
@@ -486,12 +543,12 @@ pub fn diff(old: &Manifest, new: &Manifest) -> Diff {
 pub fn print_status(staged: &Diff, unstaged: &Diff, summary: &Diff) {
     use colored::Colorize;
 
-    println!("On branch {}", "main".green());
+    outln!("On branch {}", "main".green());
 
     let unstaged_changes =
         !unstaged.modified.is_empty() || !unstaged.removed.is_empty() || !unstaged.moved.is_empty();
     if staged.is_empty() && !unstaged_changes && unstaged.added.is_empty() {
-        println!("nothing to commit, working tree clean");
+        outln!("nothing to commit, working tree clean");
         return;
     }
 
@@ -522,18 +579,18 @@ pub fn print_status(staged: &Diff, unstaged: &Diff, summary: &Diff) {
 
     // `label: path`, indented and padded like git.
     let line = |label: &str, text: &str, paint: &dyn Fn(String) -> colored::ColoredString| {
-        println!("        {}", paint(format!("{label:<12}{text}")));
+        outln!("        {}", paint(format!("{label:<12}{text}")));
     };
     // Two long names, so the new path goes under the old rather than wrapping one
     // `old -> new`, with only the changed characters marked.
     let rename = |from: &str, to: &str| {
         let (kept_from, kept_to) = crate::diff::common(from, to);
-        println!(
+        outln!(
             "        {}{}",
             renamed(format!("{:<12}", "renamed:")),
             marked(from, &kept_from, false)
         );
-        println!(
+        outln!(
             "        {}{}",
             renamed("         -> ".to_string()),
             marked(to, &kept_to, true)
@@ -543,7 +600,7 @@ pub fn print_status(staged: &Diff, unstaged: &Diff, summary: &Diff) {
     // Group order: deleted → modified → renamed → new (destructive first,
     // additive last); items are already sorted alphabetically within each.
     if !staged.is_empty() {
-        println!("\nChanges to be committed:");
+        outln!("\nChanges to be committed:");
         for p in &staged.removed {
             line("deleted:", p, &deleted);
         }
@@ -559,8 +616,8 @@ pub fn print_status(staged: &Diff, unstaged: &Diff, summary: &Diff) {
     }
 
     if unstaged_changes {
-        println!("\nChanges not staged for commit:");
-        println!(
+        outln!("\nChanges not staged for commit:");
+        outln!(
             "  {}",
             "(use \"stowe add <file>...\" to stage changes)".dimmed()
         );
@@ -576,17 +633,17 @@ pub fn print_status(staged: &Diff, unstaged: &Diff, summary: &Diff) {
     }
 
     if !unstaged.added.is_empty() {
-        println!("\nUntracked files:");
-        println!(
+        outln!("\nUntracked files:");
+        outln!(
             "  {}",
             "(use \"stowe add <file>...\" to include in commit)".dimmed()
         );
         for p in &unstaged.added {
-            println!("        {}", added(p.clone()));
+            outln!("        {}", added(p.clone()));
         }
     }
 
-    println!(
+    outln!(
         "\n{} {}  {}  {}  {}",
         "summary:".dimmed(),
         format!("+{}", summary.added.len()).green(),
@@ -605,7 +662,7 @@ pub fn print_diff(d: &Diff) -> bool {
     use colored::Colorize;
 
     if d.is_empty() {
-        println!("{}", "No changes.".dimmed());
+        outln!("{}", "No changes.".dimmed());
         return false;
     }
 
@@ -615,9 +672,9 @@ pub fn print_diff(d: &Diff) -> bool {
         if items.is_empty() {
             return;
         }
-        println!("\n{} {}", title, format!("({})", items.len()).dimmed());
+        outln!("\n{} {}", title, format!("({})", items.len()).dimmed());
         for i in items {
-            println!("  {}", paint(i));
+            outln!("  {}", paint(i));
         }
     };
 
@@ -632,18 +689,18 @@ pub fn print_diff(d: &Diff) -> bool {
     });
 
     if !d.moved.is_empty() {
-        println!(
+        outln!(
             "\n{} {}",
             "moved/renamed".blue().bold(),
             format!("({})", d.moved.len()).dimmed()
         );
         for (from, to) in &d.moved {
-            println!("  {}", from.dimmed());
-            println!("    {} {}", "→".blue(), to.cyan());
+            outln!("  {}", from.dimmed());
+            outln!("    {} {}", "→".blue(), to.cyan());
         }
     }
 
-    println!(
+    outln!(
         "\n{} {}  {}  {}  {}",
         "summary:".dimmed(),
         format!("+{}", d.added.len()).green(),

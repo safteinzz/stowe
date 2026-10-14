@@ -14,7 +14,7 @@ use crate::time::now;
 use anyhow::bail;
 use std::collections::{BTreeMap, BTreeSet, HashSet};
 
-use crate::model::{Commit, short};
+use crate::model::{Commit, count, short};
 
 /// Printable characters the Windows family of filesystems refuses in names.
 const ILLEGAL: &[char] = &['"', '*', ':', '<', '>', '?', '|', '\\'];
@@ -141,9 +141,9 @@ pub(crate) fn warn_unportable(d: &scan::Diff) {
         return;
     }
     eprintln!(
-        "\n{} {} name(s) may not be storable on external drives (FAT/exFAT/NTFS):",
+        "\n{} {} may not be storable on external drives (FAT/exFAT/NTFS):",
         "warning:".yellow().bold(),
-        bad.len()
+        count(bad.len(), "name", "names")
     );
     for p in bad {
         eprintln!("  {}", display(p).yellow());
@@ -154,6 +154,40 @@ pub(crate) fn warn_unportable(d: &scan::Diff) {
     );
 }
 
+/// Committed names a drive can't hold: groups that differ only in case, on one
+/// that ignores case, and names its filesystem refuses.
+pub(crate) struct Unstorable {
+    pub clashes: Vec<Vec<String>>,
+    pub offenders: Vec<String>,
+    strict: bool,
+    folds: bool,
+}
+
+/// Which of HEAD's names the drive at `root` can't store.
+pub(crate) fn unstorable(repo: &Repo, root: &Path) -> Result<Unstorable> {
+    let strict = probe_restrictive(root);
+    let manifest = repo.head_manifest()?;
+    // Two names a drive that ignores case can't tell apart would be written to
+    // one file there, and the second would overwrite the first.
+    let folds = probe_case_insensitive(root);
+    let clashes = if folds {
+        case_clashes(&manifest)
+    } else {
+        Vec::new()
+    };
+    let offenders = manifest
+        .iter()
+        .map(|e| e.path.clone())
+        .filter(|p| unportable(p, strict))
+        .collect();
+    Ok(Unstorable {
+        clashes,
+        offenders,
+        strict,
+        folds,
+    })
+}
+
 /// Before mirroring, verify every committed name can exist on the target
 /// drive. If not: list the offenders readably and offer (default yes) to
 /// rename them locally to safe names, recorded as a rename commit, so the
@@ -161,73 +195,111 @@ pub(crate) fn warn_unportable(d: &scan::Diff) {
 pub(crate) fn preflight_names(repo: &Repo, name: &str, root: &Path) -> Result<()> {
     use colored::Colorize;
 
-    let strict = probe_restrictive(root);
-    let manifest = repo.head_manifest()?;
-
-    // Two names a drive that ignores case can't tell apart would be written to
-    // one file there, and the second would overwrite the first.
-    if probe_case_insensitive(root) {
-        let clashes = case_clashes(&manifest);
-        if !clashes.is_empty() {
-            eprintln!(
-                "{} names that differ only in case:",
-                "note:".yellow().bold()
-            );
-            for group in &clashes {
-                let shown: Vec<String> = group.iter().map(|p| display(p)).collect();
-                eprintln!("  {}", shown.join("  /  ").yellow());
-            }
-            bail!(
-                "`{name}` ignores case, so it can't hold both of each pair - rename one, commit, \
-                 and push again"
-            );
+    let found = unstorable(repo, root)?;
+    if !found.clashes.is_empty() {
+        eprintln!(
+            "{} names that differ only in case:",
+            "note:".yellow().bold()
+        );
+        for group in &found.clashes {
+            let shown: Vec<String> = group.iter().map(|p| display(p)).collect();
+            eprintln!("  {}", shown.join("  /  ").yellow());
         }
+        bail!(
+            "`{name}` ignores case, so it can't hold both of each pair - rename one, commit, \
+             and push again"
+        );
     }
-    let offenders: Vec<String> = manifest
-        .iter()
-        .map(|e| e.path.clone())
-        .filter(|p| unportable(p, strict))
-        .collect();
-    if offenders.is_empty() {
+    if found.offenders.is_empty() {
         return Ok(());
     }
 
     eprintln!(
-        "{} {} committed name(s) can't be stored on `{name}`:",
+        "{} {} can't be stored on `{name}`:",
         "note:".yellow().bold(),
-        offenders.len()
+        count(found.offenders.len(), "committed name", "committed names")
     );
-    for p in &offenders {
+    for p in &found.offenders {
         eprintln!("  {}", display(p).yellow());
     }
     if !confirm_default_yes("Rename them locally to safe names and continue?") {
         bail!("push aborted - fix the names and push again");
     }
+    let (renamed, hash) = rename_unportable(repo, &found)?;
+    for (old, new) in &renamed {
+        outln!("renamed {} -> {new}", display(old));
+    }
+    outln!("committed {} \"fix: portable file names\"", short(&hash));
+    Ok(())
+}
 
-    // Collision-free targets: sanitize, then bump with " (n)" if taken.
-    let mut used: HashSet<String> = manifest.iter().map(|e| e.path.clone()).collect();
+/// Rename `found.offenders` in the working tree to names the drive can store
+/// and record that as a commit. Returns each `(old, new)` and the commit.
+pub(crate) fn rename_unportable(
+    repo: &Repo,
+    found: &Unstorable,
+) -> Result<(Vec<(String, String)>, String)> {
+    let manifest = repo.head_manifest()?;
+    let strict = found.strict;
+    let offenders = &found.offenders;
+
+    // Collision-free targets: sanitize, then bump with " (n)" if taken. Taken
+    // ignores case, since `found.strict` drives (exFAT) usually fold it too.
+    let mut used: HashSet<String> = manifest.iter().map(|e| e.path.to_lowercase()).collect();
     let mut map: BTreeMap<String, String> = BTreeMap::new();
-    for old in &offenders {
+    for old in offenders {
         let base = sanitize(old, strict);
         let mut target = base.clone();
         let mut n = 1;
-        while used.contains(&target) || repo.root.join(&target).exists() {
+        while used.contains(&target.to_lowercase()) || repo.root.join(&target).exists() {
             target = bump_name(&base, n);
             n += 1;
         }
-        used.insert(target.clone());
+        used.insert(target.to_lowercase());
         map.insert(old.clone(), target);
+    }
+    let mut files = manifest;
+    for e in &mut files {
+        if let Some(new) = map.get(&e.path) {
+            e.path = new.clone();
+        }
+    }
+    files.sort_by(|a, b| a.path.cmp(&b.path));
+    // A bump only renames the file, so a sanitized folder can still meet one
+    // spelled the same apart from case.
+    let clashes = if found.folds {
+        case_clashes(&files)
+    } else {
+        Vec::new()
+    };
+    if !clashes.is_empty() {
+        let pairs: Vec<String> = clashes
+            .iter()
+            .map(|g| {
+                g.iter()
+                    .map(|p| display(p))
+                    .collect::<Vec<_>>()
+                    .join("  /  ")
+            })
+            .collect();
+        bail!(
+            "the safe names would clash with names already here once case is ignored: {}; \
+             rename one of each by hand, commit, and push again",
+            pairs.join(", ")
+        );
     }
 
     // Rename on disk (pruning any directory the rename empties).
-    for (old, new) in &map {
-        let src = repo.root.join(old);
-        if !src.exists() {
+    for old in map.keys() {
+        if !repo.root.join(old).exists() {
             bail!(
                 "`{}` is no longer in the working tree - commit your changes, then push again",
                 display(old)
             );
         }
+    }
+    for (old, new) in &map {
+        let src = repo.root.join(old);
         let dst = repo.root.join(new);
         if let Some(p) = dst.parent() {
             std::fs::create_dir_all(p)?;
@@ -240,19 +312,11 @@ pub(crate) fn preflight_names(repo: &Repo, name: &str, root: &Path) -> Result<()
             }
             dir = d.parent();
         }
-        println!("renamed {} -> {new}", display(old));
     }
 
     // Record the renames as a commit. Content is untouched (same hashes), so
     // history reads them as moves. A rename keeps size+mtime, so the next scan
     // still cache-hits on these entries.
-    let mut files = manifest;
-    for e in &mut files {
-        if let Some(new) = map.get(&e.path) {
-            e.path = new.clone();
-        }
-    }
-    files.sort_by(|a, b| a.path.cmp(&b.path));
     let commit = Commit {
         parent: repo.head()?,
         message: "fix: portable file names".to_string(),
@@ -261,7 +325,6 @@ pub(crate) fn preflight_names(repo: &Repo, name: &str, root: &Path) -> Result<()
     };
     let hash = repo.write_commit(&commit)?;
     repo.set_head(&hash)?;
-    println!("committed {} \"fix: portable file names\"", short(&hash));
 
     // If a snapshot is staged, carry the renames into it too, so committing it
     // later doesn't resurrect the old paths as delete+add.
@@ -274,7 +337,7 @@ pub(crate) fn preflight_names(repo: &Repo, name: &str, root: &Path) -> Result<()
         idx.sort_by(|a, b| a.path.cmp(&b.path));
         repo.write_index(&idx)?;
     }
-    Ok(())
+    Ok((map.into_iter().collect(), hash))
 }
 
 /// `dir/name.mp3` -> `dir/name (n).mp3` (extension kept; no extension, append).
@@ -296,6 +359,46 @@ pub(crate) fn bump_name(path: &str, n: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_safe_name_never_matches_an_existing_one_ignoring_case() {
+        // exFAT both refuses `?` and ignores case, so `Song_.mp3` beside
+        // `song_.mp3` was one file there and the push lost a song.
+        let tmp = tempfile::tempdir().unwrap();
+        let repo = Repo::init(tmp.path()).unwrap();
+        let mut files = Vec::new();
+        for (path, body) in [("song_.mp3", "a"), ("Song?.mp3", "b")] {
+            std::fs::write(tmp.path().join(path), body).unwrap();
+            files.push(crate::model::Entry {
+                path: path.to_string(),
+                size: 1,
+                mtime: 0,
+                hash: body.to_string(),
+                fp: None,
+            });
+        }
+        let commit = Commit {
+            parent: None,
+            message: "songs".to_string(),
+            time: 0,
+            files,
+        };
+        repo.set_head(&repo.write_commit(&commit).unwrap()).unwrap();
+        let found = Unstorable {
+            clashes: Vec::new(),
+            offenders: vec!["Song?.mp3".to_string()],
+            strict: true,
+            folds: false,
+        };
+
+        let (renamed, _) = rename_unportable(&repo, &found).unwrap();
+        let new = &renamed[0].1;
+        assert_ne!(
+            new.to_lowercase(),
+            "song_.mp3",
+            "`Song?.mp3` was renamed to `{new}`, which a drive that ignores case reads as `song_.mp3`"
+        );
+    }
 
     #[test]
     fn control_characters_are_never_portable() {

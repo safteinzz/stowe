@@ -12,7 +12,6 @@
 use anyhow::{Context, Result, bail};
 use futures::stream::{self, StreamExt};
 use opendal::{Operator, services};
-use std::io::{IsTerminal, Write};
 use std::path::{Path, PathBuf};
 
 use crate::repo::Repo;
@@ -135,12 +134,12 @@ impl Remote {
     pub fn put_files(&self, items: Vec<(String, PathBuf)>) -> Result<usize> {
         let total = items.len();
         let done = Arc::new(AtomicUsize::new(0));
-        // Live progress on stderr, terminal-only - so `stowe push` never looks
-        // hung on a big upload, while piped/redirected output stays clean.
-        let show = std::io::stderr().is_terminal();
+        // So `stowe push` never looks hung on a big upload.
+        let prog = crate::scan::Progress::new();
         self.rt.block_on(async {
             let op = &self.op;
             let done = &done;
+            let prog = &prog;
             let results: Vec<Result<usize>> = stream::iter(items)
                 .map(|(key, src)| async move {
                     let r = if op.exists(&key).await? {
@@ -150,20 +149,14 @@ impl Remote {
                         Ok(1usize)
                     };
                     let n = done.fetch_add(1, Ordering::Relaxed) + 1;
-                    if show {
-                        eprint!("\r\x1b[Kpushing... {n}/{total}");
-                        let _ = std::io::stderr().flush();
-                    }
+                    prog.tick(&format!("pushing... {n}/{total}"));
                     r
                 })
                 .buffer_unordered(UPLOAD_CONCURRENCY)
                 .collect()
                 .await;
 
-            if show && total > 0 {
-                eprint!("\r\x1b[K"); // wipe the progress line before the summary
-                let _ = std::io::stderr().flush();
-            }
+            prog.clear();
             let mut uploaded = 0;
             for r in results {
                 uploaded += r?;
@@ -297,13 +290,28 @@ pub(crate) fn ensure_reachable(
     url: &str,
 ) -> Result<()> {
     // Non-local remotes (s3) have no path to mount; their backend handles it.
+    // The remote knows how to make itself available: let it, before we judge.
+    if crate::mirror::local_root(url).is_some()
+        && let Some(cmd) = cfg.mounts.get(name)
+    {
+        run_mount(name, cmd)?;
+    }
+    verify_reachable(repo, cfg, name, url)
+}
+
+/// [`ensure_reachable`] for a remote whose mount command, if it has one, has
+/// already run: a TUI runs it with the terminal handed over, since it may ask
+/// for a password, and checks from a thread afterwards.
+pub(crate) fn verify_reachable(
+    repo: &Repo,
+    cfg: &crate::model::Config,
+    name: &str,
+    url: &str,
+) -> Result<()> {
     let Some(root) = crate::mirror::local_root(url) else {
         return Ok(());
     };
-
-    // The remote knows how to make itself available: let it, before we judge.
-    if let Some(cmd) = cfg.mounts.get(name) {
-        run_mount(name, cmd)?;
+    if cfg.mounts.contains_key(name) {
         // A mount command exists precisely because this remote lives on its own
         // device. If we'd still be writing to the local disk, the mount didn't
         // take, whatever the script claimed.
@@ -377,23 +385,103 @@ pub(crate) fn on_local_disk(_path: &Path) -> bool {
 /// what stowe is about to execute.
 pub(crate) fn run_mount(name: &str, cmd: &str) -> Result<()> {
     use colored::Colorize;
-    println!(
+    outln!(
         "{} {}",
         "mounting".dimmed(),
         format!("`{name}`: {cmd}").dimmed()
     );
 
     #[cfg(windows)]
-    let status = std::process::Command::new("cmd").args(["/C", cmd]).status();
+    let mut command = std::process::Command::new("cmd");
+    #[cfg(windows)]
+    command.args(["/C", cmd]);
     #[cfg(not(windows))]
-    let status = std::process::Command::new("sh").arg("-c").arg(cmd).status();
+    let mut command = std::process::Command::new("sh");
+    #[cfg(not(windows))]
+    command.arg("-c").arg(cmd);
+
+    let mut child = match command.stderr(std::process::Stdio::piped()).spawn() {
+        Ok(child) => child,
+        Err(e) => bail!("could not run the mount command for `{name}`: {e}"),
+    };
+    // What it writes to stderr still reaches the terminal as it comes, a
+    // prompt with no newline included, and its tail is kept for a screen that
+    // takes the terminal back before anyone could read it there.
+    let tee = child.stderr.take().map(|mut from| {
+        std::thread::spawn(move || {
+            use std::io::{Read, Write};
+            let mut kept = Vec::new();
+            let mut buf = [0u8; 4096];
+            while let Ok(n) = from.read(&mut buf) {
+                if n == 0 {
+                    break;
+                }
+                let mut to = std::io::stderr().lock();
+                let _ = to.write_all(&buf[..n]);
+                let _ = to.flush();
+                kept.extend_from_slice(&buf[..n]);
+                if kept.len() > 16 * 1024 {
+                    kept.drain(..kept.len() - 8 * 1024);
+                }
+            }
+            kept
+        })
+    });
+    let status = child.wait();
+    let said = tee
+        .and_then(|t| t.join().ok())
+        .map(|kept| {
+            let text = String::from_utf8_lossy(&kept).into_owned();
+            let lines: Vec<String> = text
+                .lines()
+                .map(str::trim_end)
+                .filter(|l| !l.is_empty())
+                .map(str::to_string)
+                .collect();
+            lines[lines.len().saturating_sub(MOUNT_WORDS)..].to_vec()
+        })
+        .unwrap_or_default();
 
     match status {
         Ok(s) if s.success() => Ok(()),
-        Ok(s) => bail!(
-            "mount command for `{name}` failed (exit {})",
-            s.code().unwrap_or(1)
-        ),
-        Err(e) => bail!("could not run the mount command for `{name}`: {e}"),
+        // Killed by a signal, or a shell's own word for Ctrl-C: the person
+        // stopped it, which is not a failure to explain.
+        Ok(s) if s.code().is_none_or(|c| c == 130) => Err(MountFailed {
+            message: format!("mount command for `{name}` was cancelled"),
+            said,
+            cancelled: true,
+        }
+        .into()),
+        Ok(s) => Err(MountFailed {
+            message: format!(
+                "mount command for `{name}` failed (exit {})",
+                s.code().unwrap_or(1)
+            ),
+            said,
+            cancelled: false,
+        }
+        .into()),
+        Err(e) => bail!("could not wait for the mount command for `{name}`: {e}"),
     }
 }
+
+/// Lines of a mount command's own stderr a failure keeps.
+const MOUNT_WORDS: usize = 5;
+
+/// A mount command that ran and did not succeed. `said` is the end of what it
+/// wrote to stderr, at most five lines, already shown on the terminal as it
+/// ran; `cancelled` when it was stopped by a signal rather than failing.
+#[derive(Debug)]
+pub(crate) struct MountFailed {
+    message: String,
+    pub said: Vec<String>,
+    pub cancelled: bool,
+}
+
+impl std::fmt::Display for MountFailed {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message)
+    }
+}
+
+impl std::error::Error for MountFailed {}

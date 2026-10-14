@@ -5,7 +5,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use crate::model::Entry;
-use crate::model::short;
+use crate::model::{count, short};
 use crate::remote::Source;
 use crate::remote::ensure_reachable;
 use crate::remote::remote_url;
@@ -83,11 +83,46 @@ pub fn run(paths: Vec<PathBuf>, all: bool, from: Option<&str>, remote_name: &str
     // never doubles your disk.
     let url = remote_url(&repo, remote_name)?;
     ensure_reachable(&repo, &repo.config()?, remote_name, &url)?;
-    let source = Source::open(&repo, remote_name, &url)?;
+    let done = restore(&repo, remote_name, &url, &chash, &targets, |p| {
+        outln!("restored {p}")
+    })?;
+    outln!("\n{}", done.summary());
+    Ok(())
+}
 
-    let mut restored = 0usize;
+/// What a restore wrote, and how many files already held the wanted bytes.
+pub struct Restored {
+    pub restored: Vec<String>,
+    pub skipped: usize,
+    pub from: String,
+}
+
+impl Restored {
+    pub fn summary(&self) -> String {
+        format!(
+            "{} restored from {}, {} already current.",
+            count(self.restored.len(), "file", "files"),
+            short(&self.from),
+            self.skipped
+        )
+    }
+}
+
+/// Write `targets`, as commit `chash` recorded them, from a remote the caller
+/// has already made reachable, handing `wrote` each path once it is on disk,
+/// so a failure partway still says which files it left behind.
+pub fn restore(
+    repo: &Repo,
+    remote_name: &str,
+    url: &str,
+    chash: &str,
+    targets: &[&Entry],
+    mut wrote: impl FnMut(&str),
+) -> Result<Restored> {
+    let source = Source::open(repo, remote_name, url)?;
+    let mut restored = Vec::new();
     let mut skipped = 0usize;
-    for e in &targets {
+    for e in targets {
         let dest = repo.root.join(&e.path);
         // Already the wanted content? Leave it (and don't re-fetch).
         if dest.exists() && scan::hash_file(&dest)? == e.hash {
@@ -100,16 +135,15 @@ pub fn run(paths: Vec<PathBuf>, all: bool, from: Option<&str>, remote_name: &str
                 "content for `{}` (commit {}) isn't on remote `{remote_name}` - it was never \
                  pushed there, or was changed there outside stowe",
                 e.path,
-                short(&chash)
+                short(chash)
             );
         }
-        restored += 1;
-        println!("restored {}", e.path);
+        wrote(&e.path);
+        restored.push(e.path.clone());
     }
-
-    println!(
-        "\n{restored} file(s) restored from {}, {skipped} already current.",
-        short(&chash)
-    );
-    Ok(())
+    Ok(Restored {
+        restored,
+        skipped,
+        from: chash.to_string(),
+    })
 }

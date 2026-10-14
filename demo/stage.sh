@@ -6,6 +6,7 @@
 #
 #   ./stage.sh up      build the archive (no repo yet, where the import starts)
 #   ./stage.sh mid     up, then init/commit/push and reorganise (the stills)
+#   ./stage.sh story   mid, then a history to browse and a second archive (the clips)
 #   ./stage.sh shell   a shell in the archive where `stowe` is this build
 #   ./stage.sh down    unmount anything under the stage, then delete it
 #
@@ -142,6 +143,41 @@ mid() {
   echo "staged in $STAGE, committed, pushed to the drive and reorganised"
 }
 
+# Where the interactive clips start: the reorganisation committed and pushed,
+# two more commits only one of which reached the drive, work in progress for
+# istatus, and a second archive beside the first so irepos has two to list.
+story() {
+  mid > /dev/null
+  in_archive add -A > /dev/null
+  in_archive commit -m "reorganise: date-prefix the shoots, Raw -> source" > /dev/null
+  in_archive push drive > /dev/null
+  mv "$ARCHIVE/Music/Halcyon Drift - Tidewater.mp3" "$ARCHIVE/Music/Halcyon Drift - Tidewater (2021).mp3"
+  in_archive add -A > /dev/null
+  in_archive commit -m "date the Halcyon Drift single" > /dev/null
+  in_archive push drive > /dev/null
+  blob "$ARCHIVE/Photos/2019-iceland/DSC_0602.NEF" 312
+  blob "$ARCHIVE/Photos/2019-iceland/DSC_0611.NEF" 276
+  in_archive add -A > /dev/null
+  in_archive commit -m "the last two from the glacier walk" > /dev/null
+  # Never pushed: the drive is one commit behind and its push plan is these.
+  blob "$ARCHIVE/Renders/kitchen-final-4k-v2.exr" 520
+  mv "$ARCHIVE/Datasets/census-2021/migration.parquet" "$ARCHIVE/Datasets/census-2021/migration-2021.parquet"
+  in_archive add "Datasets" > /dev/null
+  cp "$STAGE/Downloads/promo-cut-v2.MP4" "$ARCHIVE/Video/promo-cut-v2.MP4"
+
+  local podcast="$STAGE/Podcast"
+  track "$podcast/Season 1/01 - Pilot.mp3" 330 "Pilot" "Low Tide Radio"
+  track "$podcast/Season 1/02 - Harbour Lights.mp3" 349 "Harbour Lights" "Low Tide Radio"
+  (cd "$podcast" && env -i $(env_for_stage) "$STOWE" init > /dev/null \
+    && env -i $(env_for_stage) "$STOWE" add -A > /dev/null \
+    && env -i $(env_for_stage) "$STOWE" commit -m "season one" > /dev/null \
+    && env -i $(env_for_stage) "$STOWE" remote add drive "local:~/drive-podcast" > /dev/null)
+  mkdir -p "$STAGE/drive-podcast"
+  (cd "$podcast" && env -i $(env_for_stage) "$STOWE" push drive > /dev/null)
+  track "$podcast/Season 1/03 - Fog Signal.mp3" 392 "Fog Signal" "Low Tide Radio"
+  echo "staged in $STAGE, with a history to browse and a second archive"
+}
+
 # ---------------------------------------------------------------------------
 # the teardown guard - identical in every crate's rig
 # ---------------------------------------------------------------------------
@@ -228,8 +264,9 @@ open_shell() {
 case "${1:-up}" in
   up)     up ;;
   mid)    mid ;;
+  story)  story ;;
   reorg)  reorganise ;;
   shell)  open_shell ;;
   down)   down_quiet; echo "torn down" ;;
-  *)      echo "usage: $0 [up|mid|reorg|shell|down]" >&2; exit 2 ;;
+  *)      echo "usage: $0 [up|mid|story|reorg|shell|down]" >&2; exit 2 ;;
 esac

@@ -2,7 +2,7 @@
 # no window sizing, no cropping: the size below is the size of both shots, and a
 # rerun after an output change replaces them identically.
 #
-#   cd demo && vhs shots.tape
+#   cd demo && ./render.sh shots
 #
 # The short stills live in shots-short.tape, in a frame their own height - VHS
 # fixes the frame size for a whole tape, so one tape per frame is the only way

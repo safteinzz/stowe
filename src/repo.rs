@@ -17,17 +17,27 @@ pub struct Repo {
 impl Repo {
     /// Walk up from the current directory until we find a `.stowe/`.
     pub fn find() -> Result<Repo> {
-        let mut cur = std::env::current_dir()?;
+        Repo::find_from(&std::env::current_dir()?)
+    }
+
+    /// Walk up from `start` until we find a `.stowe/`.
+    pub fn find_from(start: &Path) -> Result<Repo> {
+        let mut cur = start.to_path_buf();
         loop {
             if cur.join(".stowe").is_dir() {
-                return Ok(Repo {
-                    dir: cur.join(".stowe"),
-                    root: cur,
-                });
+                return Ok(Repo::at(cur));
             }
             if !cur.pop() {
                 bail!("not a stowe repo (no .stowe found here or in any parent)");
             }
+        }
+    }
+
+    /// The repo whose working tree is `root`, which must already hold a `.stowe/`.
+    pub fn at(root: PathBuf) -> Repo {
+        Repo {
+            dir: root.join(".stowe"),
+            root,
         }
     }
 

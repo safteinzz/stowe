@@ -2,7 +2,7 @@
 # their own tape because VHS fixes the frame size for a whole tape, and a
 # nine-line answer in the tall frame of shots.tape is a mostly empty picture.
 #
-#   cd demo && vhs shots-short.tape
+#   cd demo && ./render.sh shots-short
 #
 # It rebuilds the stage from scratch, so it can be run on its own and in any
 # order relative to shots.tape.

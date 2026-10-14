@@ -116,6 +116,34 @@ fn unstage_discards_the_index_but_keeps_files() {
     assert!(sb.ok(&["status"]).contains("Untracked"));
 }
 
+#[test]
+fn a_reader_that_stops_early_ends_the_output_quietly() {
+    let sb = Sandbox::new();
+    sb.write("a.flac", "a");
+    sb.commit("one");
+
+    // What `stowe log | head` does to it, every time: the read end is gone
+    // before the first line is written.
+    let (reader, writer) = std::io::pipe().unwrap();
+    drop(reader);
+    let out = Command::new(env!("CARGO_BIN_EXE_stowe"))
+        .arg("log")
+        .current_dir(&sb.repo)
+        .stdout(writer)
+        .output()
+        .expect("failed to run stowe");
+    assert!(
+        out.status.success(),
+        "`stowe log` into a closed pipe exited {:?}",
+        out.status.code()
+    );
+    assert!(
+        out.stderr.is_empty(),
+        "`stowe log` into a closed pipe complained: {}",
+        String::from_utf8_lossy(&out.stderr)
+    );
+}
+
 // --- mirror remotes ---------------------------------------------------------
 
 #[test]

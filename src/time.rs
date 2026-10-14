@@ -23,6 +23,11 @@ pub(crate) fn format_time(secs: i64) -> String {
     )
 }
 
+/// The same to the minute, `YYYY-MM-DD HH:MM`, for a row with no room for more.
+pub(crate) fn short_time(secs: i64) -> String {
+    format_time(secs).chars().take(16).collect()
+}
+
 pub(crate) fn civil_from_days(z: i64) -> (i64, u32, u32) {
     let z = z + 719468;
     let era = if z >= 0 { z } else { z - 146096 } / 146097;

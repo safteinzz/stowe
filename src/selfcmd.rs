@@ -35,11 +35,11 @@ pub fn run(cmd: Cmd) -> Result<()> {
 
 fn update(yes: bool) -> Result<()> {
     if !yes && !confirm() {
-        println!("{}", "Aborted.".dimmed());
+        outln!("{}", "Aborted.".dimmed());
         return Ok(());
     }
 
-    println!(
+    outln!(
         "{} {}\n",
         "Updating stowe via".dimmed(),
         "cargo install stowe --force".bold()
@@ -50,7 +50,7 @@ fn update(yes: bool) -> Result<()> {
         .status()
     {
         Ok(status) if status.success() => {
-            println!("\n{}", "✓ stowe is up to date.".green());
+            outln!("\n{}", "✓ stowe is up to date.".green());
             Ok(())
         }
         Ok(status) => bail!(
@@ -70,15 +70,15 @@ fn check() -> Result<()> {
     let current = env!("CARGO_PKG_VERSION");
     let latest = latest()?;
     if newer(&latest, current) {
-        println!(
+        outln!(
             "{} {} {}",
             format!("stowe {latest}").bold(),
             "is available, you have".dimmed(),
             current.bold()
         );
-        println!("{} {}", "run".dimmed(), "stowe self update".bold());
+        outln!("{} {}", "run".dimmed(), "stowe self update".bold());
     } else {
-        println!(
+        outln!(
             "{} {}",
             format!("stowe {current}").bold(),
             "is the latest release.".dimmed()
@@ -127,7 +127,7 @@ fn newer(a: &str, b: &str) -> bool {
 
 /// Ask the user to confirm. Defaults to No, so a bare Enter cancels.
 fn confirm() -> bool {
-    print!(
+    out!(
         "{} {} ",
         "Update stowe to the latest release via cargo?".bold(),
         "[y/N]".dimmed()

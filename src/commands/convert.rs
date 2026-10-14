@@ -3,6 +3,7 @@
 use anyhow::{Result, anyhow, bail};
 
 use crate::mirror;
+use crate::model::count;
 use crate::remote::ensure_reachable;
 use crate::remote::remote_url;
 use crate::repo::Repo;
@@ -11,7 +12,44 @@ pub fn run(name: &str, to: Option<&str>) -> Result<()> {
     let repo = Repo::find()?;
     let url = remote_url(&repo, name)?;
     ensure_reachable(&repo, &repo.config()?, name, &url)?;
-    let root = mirror::local_root(&url).ok_or_else(|| {
+    match convert(&repo, name, &url, to) {
+        Ok(done) => {
+            outln!("{}", done.summary(name));
+            Ok(())
+        }
+        Err(e) => {
+            if let Some(d) = e.downcast_ref::<mirror::Drifted>() {
+                d.drift.report();
+            }
+            Err(e)
+        }
+    }
+}
+
+/// What a convert came to.
+pub enum Converted {
+    Already(mirror::Format),
+    Done(mirror::Format, mirror::ConvertReport),
+}
+
+impl Converted {
+    pub fn summary(&self, name: &str) -> String {
+        match self {
+            Converted::Already(f) => format!("remote `{name}` is already a {}.", f.name()),
+            Converted::Done(f, r) => format!(
+                "converted `{name}` to {}: {}, {}.",
+                f.name(),
+                count(r.files, "file", "files"),
+                count(r.preserved, "preserved version", "preserved versions")
+            ),
+        }
+    }
+}
+
+/// Convert a remote the caller has already made reachable, to `to` or else the
+/// other format. Prints nothing: drift fails with [`mirror::Drifted`].
+pub fn convert(repo: &Repo, name: &str, url: &str, to: Option<&str>) -> Result<Converted> {
+    let root = mirror::local_root(url).ok_or_else(|| {
         anyhow!("only local remotes can be a playable mirror - `{name}` is {url}")
     })?;
 
@@ -30,13 +68,12 @@ pub fn run(name: &str, to: Option<&str>) -> Result<()> {
         },
     };
     if current == target {
-        println!("remote `{name}` is already a {}.", target.name());
-        return Ok(());
+        return Ok(Converted::Already(target));
     }
 
     let r = match target {
         mirror::Format::Mirror => mirror::backup_to_mirror(&root)?,
-        mirror::Format::Backup => mirror::mirror_to_backup(&repo, &root)?,
+        mirror::Format::Backup => mirror::mirror_to_backup(repo, &root)?,
         mirror::Format::Empty => unreachable!(),
     };
 
@@ -46,12 +83,5 @@ pub fn run(name: &str, to: Option<&str>) -> Result<()> {
     cfg.formats
         .insert(name.to_string(), target.name().to_string());
     repo.save_config(&cfg)?;
-
-    println!(
-        "converted `{name}` to {}: {} files, {} preserved version(s).",
-        target.name(),
-        r.files,
-        r.preserved
-    );
-    Ok(())
+    Ok(Converted::Done(target, r))
 }

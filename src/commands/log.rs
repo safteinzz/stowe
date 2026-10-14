@@ -9,14 +9,14 @@ pub fn run() -> Result<()> {
     let repo = Repo::find()?;
     let history = repo.history()?;
     if history.is_empty() {
-        println!("no commits yet.");
+        outln!("no commits yet.");
         return Ok(());
     }
     for (hash, c) in history {
-        println!("commit {hash}");
-        println!("Date:  {}", format_time(c.time));
-        println!("Files: {}", c.files.len());
-        println!("\n    {}\n", c.message);
+        outln!("commit {hash}");
+        outln!("Date:  {}", format_time(c.time));
+        outln!("Files: {}", c.files.len());
+        outln!("\n    {}\n", c.message);
     }
     Ok(())
 }
