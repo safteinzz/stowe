@@ -382,11 +382,42 @@ pub fn vscrollbar(frame: &mut Frame, area: Rect, total: usize, top: usize, view:
     frame.render_stateful_widget(bar, area.inner(Margin::new(0, 1)), &mut state);
 }
 
+/// A scrollbar on `area`'s bottom border for content `total` columns wide,
+/// `view` of them on screen from `left`, kept one column off each corner.
+/// Nothing is drawn when every column fits.
+pub fn hscrollbar(frame: &mut Frame, area: Rect, total: usize, left: usize, view: usize) {
+    if total <= view {
+        return;
+    }
+    let mut state = ScrollbarState::new(total - view).position(left);
+    // `■` renders vertically centered and medium-weight - between the too-thin,
+    // low-sitting `▬` and the full-cell block `█`.
+    let bar = Scrollbar::new(ScrollbarOrientation::HorizontalBottom)
+        .begin_symbol(None)
+        .end_symbol(None)
+        .thumb_symbol("■");
+    frame.render_stateful_widget(bar, area.inner(Margin::new(1, 0)), &mut state);
+}
+
+/// Scrollbar for a diff pane: thumb tracks the scroll line.
+pub fn diff_scrollbar(frame: &mut Frame, area: Rect, total_lines: usize, scroll: u16) {
+    let view = area.height.saturating_sub(2) as usize;
+    vscrollbar(frame, area, total_lines, scroll as usize, view);
+}
+
 /// Scrollbar for a list pane: thumb tracks the visible window (the list's
 /// `offset`). Call it right after rendering the list so the offset is current.
 pub fn list_scrollbar(frame: &mut Frame, area: Rect, total: usize, offset: usize) {
     let view = area.height.saturating_sub(2) as usize;
     vscrollbar(frame, area, total, offset, view);
+}
+
+/// Horizontal scrollbar along a diff pane's bottom border. `max_line` is the
+/// widest content line, `cell_w` the visible columns per side, `hscroll` the pan
+/// offset. Drawn only when the content is wider than one cell (else there's
+/// nothing to pan).
+pub fn diff_hscrollbar(frame: &mut Frame, area: Rect, max_line: usize, cell_w: u16, hscroll: u16) {
+    hscrollbar(frame, area, max_line, hscroll as usize, cell_w as usize);
 }
 
 // ── modal ───────────────────────────────────────────────────────────────────

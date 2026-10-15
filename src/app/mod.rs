@@ -16,6 +16,7 @@ mod inspect;
 mod jobs;
 mod keys;
 mod load;
+mod patch;
 mod remotes;
 mod repos;
 mod scan;
@@ -24,6 +25,8 @@ mod ui;
 
 use crate::history::Change;
 use crate::scan::progress_to_screen;
+use crate::tui::difffeed::DiffFeed;
+use crate::tui::highlight::RenderedDiff;
 use crate::tui::input::{Accel, stepped};
 use crate::tui::widgets::{CommandLine, Form, Modal, NOTE, Query};
 use crate::tui::{FRAME, pop_keyboard_enhancement, push_keyboard_enhancement};
@@ -270,6 +273,11 @@ pub struct App {
     ssel: Sel,
     sfeed: Feed,
     status_failed: Option<String>,
+    /// The selected file's diff, highlighted, and how far it is scrolled and panned.
+    prepared: RenderedDiff,
+    dscroll: u16,
+    dhscroll: u16,
+    dfeed: DiffFeed,
 
     // ── commits: the repo's history, read once and shared by every level ────
     log: Vec<Logged>,
@@ -332,6 +340,10 @@ impl App {
             ssel: Sel::default(),
             sfeed: Feed::default(),
             status_failed: None,
+            prepared: RenderedDiff::default(),
+            dscroll: 0,
+            dhscroll: 0,
+            dfeed: DiffFeed::default(),
             log: Vec::new(),
             pushed_from: usize::MAX,
             csel: Sel::default(),
@@ -382,7 +394,6 @@ impl App {
     pub fn at_status(repo: PathBuf) -> App {
         let mut app = App::new(Level::Status, repo);
         app.request_status();
-        app.request_log();
         app
     }
 
@@ -405,7 +416,7 @@ impl App {
         }
         ratatui::restore();
         if let Err(e) = result {
-            eprintln!("stowe {cmd}: {e}");
+            eprintln!("stowe {cmd}: {}", crate::errors::io_words(&e));
             std::process::exit(1);
         }
     }
@@ -468,6 +479,7 @@ impl App {
         self.job.is_some()
             || self.cfeed.loading
             || self.sfeed.loading
+            || self.dfeed.loading()
             || self.pfeed.loading
             || self.rfeed.loading
             || self
@@ -478,6 +490,9 @@ impl App {
 
     /// Take everything the background reads have produced since the last frame.
     fn drain(&mut self) {
+        if let Some(prepared) = self.dfeed.take() {
+            self.prepared = prepared;
+        }
         while let Ok(batch) = self.rx.try_recv() {
             match batch {
                 Batch::Log {
@@ -549,7 +564,8 @@ impl App {
             (Level::Remotes | Level::Scan | Level::Commits, Pane::Bottom)
             | (Level::Files, Pane::Top) => &mut self.fsel,
             (Level::Status, Pane::Top) => &mut self.ssel,
-            (Level::Status | Level::Files, Pane::Bottom) => &mut self.hsel,
+            (Level::Status, Pane::Bottom) => return None,
+            (Level::Files, Pane::Bottom) => &mut self.hsel,
         })
     }
 
@@ -574,7 +590,8 @@ impl App {
             (Level::Remotes | Level::Scan | Level::Commits, Pane::Bottom)
             | (Level::Files, Pane::Top) => self.rescope_files(),
             (Level::Status, Pane::Top) => self.rescope_status(),
-            (Level::Status | Level::Files, Pane::Bottom) => self.rescope_hist(),
+            (Level::Status, Pane::Bottom) => {}
+            (Level::Files, Pane::Bottom) => self.rescope_hist(),
         }
         if pane == Pane::Top {
             self.pending = true;
@@ -598,10 +615,7 @@ impl App {
                 self.load_remotes();
                 self.request_log();
             }
-            Level::Status => {
-                self.request_status();
-                self.request_log();
-            }
+            Level::Status => self.request_status(),
         }
     }
 

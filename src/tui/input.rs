@@ -13,6 +13,7 @@ use std::time::{Duration, Instant};
 pub const Y_MOVE: &str = "j/k ↑↓";
 pub const CTRL_Y_MOVE: &str = "ctrl-j/k ↑↓";
 pub const X_MOVE: &str = "h/l ←→";
+pub const CTRL_X_MOVE: &str = "ctrl-h/l ←→";
 
 /// Ctrl-C: what Esc does under a box, in a filter or in a form, and quit on a
 /// view.

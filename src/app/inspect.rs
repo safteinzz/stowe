@@ -133,7 +133,6 @@ impl App {
         if let Some(c) = self.commit() {
             rows.push(row("commit", format!("{}  {}", short(&c.hash), c.message)));
         }
-        rows.push(row("versions", self.hist.len().to_string()));
         Some((format!("file {}", leaf(&f.path)), rows, String::new()))
     }
 

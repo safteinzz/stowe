@@ -80,13 +80,13 @@ pub fn sanitize(path: &str, strict: bool) -> String {
 /// ext4 and friends accept. Failing to probe assumes the worst.
 pub fn probe_restrictive(root: &Path) -> bool {
     let dir = root.join(".stowe");
-    if std::fs::create_dir_all(&dir).is_err() {
+    if fs_err::create_dir_all(&dir).is_err() {
         return true;
     }
     let probe = dir.join(".probe:*?");
-    match std::fs::write(&probe, b"") {
+    match fs_err::write(&probe, b"") {
         Ok(()) => {
-            let _ = std::fs::remove_file(&probe);
+            let _ = fs_err::remove_file(&probe);
             false
         }
         Err(_) => true,
@@ -99,11 +99,11 @@ pub fn probe_restrictive(root: &Path) -> bool {
 pub fn probe_case_insensitive(root: &Path) -> bool {
     let dir = root.join(".stowe");
     let probe = dir.join(".probe-case");
-    if std::fs::create_dir_all(&dir).is_err() || std::fs::write(&probe, b"").is_err() {
+    if fs_err::create_dir_all(&dir).is_err() || fs_err::write(&probe, b"").is_err() {
         return false;
     }
     let folds = dir.join(".PROBE-CASE").symlink_metadata().is_ok();
-    let _ = std::fs::remove_file(&probe);
+    let _ = fs_err::remove_file(&probe);
     folds
 }
 
@@ -302,12 +302,12 @@ pub(crate) fn rename_unportable(
         let src = repo.root.join(old);
         let dst = repo.root.join(new);
         if let Some(p) = dst.parent() {
-            std::fs::create_dir_all(p)?;
+            fs_err::create_dir_all(p)?;
         }
-        std::fs::rename(&src, &dst)?;
+        fs_err::rename(&src, &dst)?;
         let mut dir = src.parent();
         while let Some(d) = dir {
-            if d == repo.root || std::fs::remove_dir(d).is_err() {
+            if d == repo.root || fs_err::remove_dir(d).is_err() {
                 break;
             }
             dir = d.parent();
@@ -368,7 +368,7 @@ mod tests {
         let repo = Repo::init(tmp.path()).unwrap();
         let mut files = Vec::new();
         for (path, body) in [("song_.mp3", "a"), ("Song?.mp3", "b")] {
-            std::fs::write(tmp.path().join(path), body).unwrap();
+            fs_err::write(tmp.path().join(path), body).unwrap();
             files.push(crate::model::Entry {
                 path: path.to_string(),
                 size: 1,

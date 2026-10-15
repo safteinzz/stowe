@@ -38,7 +38,7 @@ Sleep 2s
 # one file staged, then the rest
 Type "j"
 Sleep 800ms
-Enter
+Space
 Sleep 1.2s
 Type "S"
 Sleep 1.5s

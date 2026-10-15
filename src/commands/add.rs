@@ -9,7 +9,7 @@ use crate::model::under_prefix;
 use crate::model::{Entry, Manifest, count};
 use crate::names::warn_unportable;
 use crate::repo::Repo;
-use crate::{ignore, scan};
+use crate::{ignore, kept, scan};
 
 pub fn run(paths: Vec<PathBuf>, all: bool) -> Result<()> {
     let repo = Repo::find()?;
@@ -61,6 +61,8 @@ pub fn stage_all(repo: &Repo) -> Result<Option<(Manifest, scan::Diff)>> {
     if d.is_empty() {
         return Ok(None);
     }
+    let before = repo.read_index()?.unwrap_or(head);
+    kept::keep(repo, &current, &before)?;
     repo.write_index(&current)?;
     Ok(Some((current, d)))
 }
@@ -75,10 +77,10 @@ pub fn stage_paths(
     named: &[(PathBuf, String, String)],
 ) -> Result<(usize, usize, Manifest)> {
     let head = repo.head_manifest()?;
-    let mut index: BTreeMap<String, Entry> = repo
-        .read_index()?
-        .unwrap_or_else(|| head.clone())
-        .into_iter()
+    let before = repo.read_index()?.unwrap_or(head);
+    let mut index: BTreeMap<String, Entry> = before
+        .iter()
+        .cloned()
         .map(|e| (e.path.clone(), e))
         .collect();
 
@@ -121,6 +123,7 @@ pub fn stage_paths(
     }
 
     let manifest: Manifest = index.into_values().collect();
+    kept::keep(repo, &manifest, &before)?;
     repo.write_index(&manifest)?;
     Ok((staged, removed, manifest))
 }

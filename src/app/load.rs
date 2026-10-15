@@ -147,7 +147,7 @@ pub fn stream_log(repo: PathBuf, seq: u64, latest: Arc<AtomicU64>, tx: Sender<Ba
                 seq,
                 rows,
                 done: true,
-                failed: walked.err().map(|e| format!("{e:#}")),
+                failed: walked.err().map(|e| crate::errors::words(&e)),
             });
         }
     });
@@ -156,7 +156,7 @@ pub fn stream_log(repo: PathBuf, seq: u64, latest: Arc<AtomicU64>, tx: Sender<Ba
 /// `stowe status`, as rows: staged, then not staged, then untracked.
 pub fn stream_status(repo: PathBuf, seq: u64, tx: Sender<Batch>) {
     thread::spawn(move || {
-        let rows = status_rows(&Repo::at(repo)).map_err(|e| format!("{e:#}"));
+        let rows = status_rows(&Repo::at(repo)).map_err(|e| crate::errors::words(&e));
         let _ = tx.send(Batch::Status { seq, rows });
     });
 }
@@ -189,7 +189,7 @@ fn status_rows(repo: &Repo) -> anyhow::Result<Vec<StatusRow>> {
 /// last pushed there and HEAD's, never from the remote itself.
 pub fn stream_plan(repo: PathBuf, name: String, seq: u64, tx: Sender<Batch>) {
     thread::spawn(move || {
-        let rows = plan(&Repo::at(repo), &name).map_err(|e| format!("{e:#}"));
+        let rows = plan(&Repo::at(repo), &name).map_err(|e| crate::errors::words(&e));
         let _ = tx.send(Batch::Plan { seq, rows });
     });
 }
@@ -235,7 +235,7 @@ fn reach(repo: &Repo, name: &str, url: &str, mountable: bool) -> Reach {
     } else if mountable {
         // An unmounted drive leaves its mountpoint behind, empty, and an empty
         // drive just mounted reads the same, so only something in it says here.
-        std::fs::read_dir(&root).is_ok_and(|mut d| d.next().is_some())
+        fs_err::read_dir(&root).is_ok_and(|mut d| d.next().is_some())
     } else {
         crate::remote::remote_reachable(url)
     };
@@ -251,7 +251,7 @@ pub fn stream_repos(paths: Vec<PathBuf>, base: PathBuf, seq: u64, tx: Sender<Bat
     for path in paths {
         let (base, tx) = (base.clone(), tx.clone());
         thread::spawn(move || {
-            let state = repos::state(&path, &base).map_err(|e| format!("{e:#}"));
+            let state = repos::state(&path, &base).map_err(|e| crate::errors::words(&e));
             let _ = tx.send(Batch::Repo { seq, path, state });
         });
     }

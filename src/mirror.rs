@@ -170,9 +170,9 @@ pub fn sync(repo: &Repo, root: &Path, force: bool) -> Result<SyncReport> {
     let history = repo.history()?;
     let target: &Manifest = &history[0].1.files;
 
-    std::fs::create_dir_all(dot(root).join("objects"))
+    fs_err::create_dir_all(dot(root).join("objects"))
         .with_context(|| format!("creating mirror at {}", crate::paths::short(root)))?;
-    std::fs::create_dir_all(dot(root).join("commits"))?;
+    fs_err::create_dir_all(dot(root).join("commits"))?;
     recover_tmp(root)?;
 
     // The snapshot the mirror currently reflects (empty on a fresh mirror).
@@ -250,7 +250,7 @@ pub fn sync(repo: &Repo, root: &Path, force: bool) -> Result<SyncReport> {
 
     let prog = scan::Progress::new();
     let tmp = dot(root).join("tmp");
-    std::fs::create_dir_all(&tmp)?;
+    fs_err::create_dir_all(&tmp)?;
 
     // A name the mirror already holds (in any case, where its filesystem ignores
     // case) can't be renamed onto until whatever holds it has moved or gone, so
@@ -373,14 +373,14 @@ pub fn sync(repo: &Repo, root: &Path, force: bool) -> Result<SyncReport> {
     // behind, empty. Sweep every such ghost (this also heals a mirror that
     // accumulated them before this pass existed).
     prune_empty_dirs(root)?;
-    let _ = std::fs::remove_dir(&tmp);
+    let _ = fs_err::remove_dir(&tmp);
 
     // History + ref, so the mirror is self-describing.
     let mut new_commits = 0;
     for (h, c) in &history {
         let dst = dot(root).join("commits").join(format!("{h}.json"));
         if !dst.exists() {
-            std::fs::write(&dst, serde_json::to_vec_pretty(c)?)?;
+            fs_err::write(&dst, serde_json::to_vec_pretty(c)?)?;
             new_commits += 1;
         }
     }
@@ -418,23 +418,23 @@ fn copy_in(
         )
     })?;
     let shown = crate::names::display(path);
-    std::fs::copy(repo.root.join(src_rel), part)
+    fs_err::copy(repo.root.join(src_rel), part)
         .with_context(|| format!("copying {shown} to mirror"))?;
     ensure_parent(dst)?;
     // An sftp server without the posix-rename extension refuses to rename onto
     // an existing file, which a repair does.
-    if std::fs::rename(part, dst).is_err() {
+    if fs_err::rename(part, dst).is_err() {
         if dst.is_file() {
-            std::fs::remove_file(dst).with_context(|| format!("replacing {shown} on mirror"))?;
+            fs_err::remove_file(dst).with_context(|| format!("replacing {shown} on mirror"))?;
         }
-        std::fs::rename(part, dst).with_context(|| format!("copying {shown} to mirror"))?;
+        fs_err::rename(part, dst).with_context(|| format!("copying {shown} to mirror"))?;
     }
     Ok(())
 }
 
 /// Rename on the mirror, saying which file failed.
 fn rename_on_mirror(from: &Path, to: &Path, path: &str) -> Result<()> {
-    std::fs::rename(from, to)
+    fs_err::rename(from, to)
         .with_context(|| format!("moving {} on mirror", crate::names::display(path)))
 }
 
@@ -443,7 +443,7 @@ fn rename_on_mirror(from: &Path, to: &Path, path: &str) -> Result<()> {
 /// bytes still match the hash in its name, rather than sitting where no walk
 /// ever looks.
 fn recover_tmp(root: &Path) -> Result<()> {
-    let Ok(rd) = std::fs::read_dir(dot(root).join("tmp")) else {
+    let Ok(rd) = fs_err::read_dir(dot(root).join("tmp")) else {
         return Ok(());
     };
     for entry in rd {
@@ -462,9 +462,9 @@ fn recover_tmp(root: &Path) -> Result<()> {
             Some(h) if !object_path(root, h).exists() && scan::hash_file(&path)? == h => {
                 let obj = object_path(root, h);
                 ensure_parent(&obj)?;
-                std::fs::rename(&path, &obj)?;
+                fs_err::rename(&path, &obj)?;
             }
-            _ => std::fs::remove_file(&path)?,
+            _ => fs_err::remove_file(&path)?,
         }
     }
     Ok(())
@@ -482,7 +482,7 @@ fn preserve(root: &Path, hash: &str, current: &Path) -> Result<()> {
     }
     ensure_parent(&obj)?;
     // Rename frees the real path for the new content and is instant on-device.
-    std::fs::rename(current, &obj)
+    fs_err::rename(current, &obj)
         .with_context(|| format!("preserving old {}", current.display()))?;
     Ok(())
 }
@@ -562,7 +562,7 @@ fn respell_dirs(root: &Path, target: &Manifest, on_disk: &HashMap<String, String
 
 fn ensure_parent(p: &Path) -> Result<()> {
     if let Some(parent) = p.parent() {
-        std::fs::create_dir_all(parent)?;
+        fs_err::create_dir_all(parent)?;
     }
     Ok(())
 }
@@ -575,7 +575,7 @@ fn prune_empty_dirs(root: &Path) -> Result<()> {
     let mut dirs = Vec::new();
     let mut stack = vec![root.to_path_buf()];
     while let Some(d) = stack.pop() {
-        let rd = match std::fs::read_dir(&d) {
+        let rd = match fs_err::read_dir(&d) {
             Ok(rd) => rd,
             Err(_) => continue,
         };
@@ -592,7 +592,7 @@ fn prune_empty_dirs(root: &Path) -> Result<()> {
     }
     dirs.sort_by_key(|p| std::cmp::Reverse(p.components().count()));
     for d in dirs {
-        let _ = std::fs::remove_dir(&d); // succeeds only if empty
+        let _ = fs_err::remove_dir(&d); // succeeds only if empty
     }
     Ok(())
 }
@@ -600,7 +600,7 @@ fn prune_empty_dirs(root: &Path) -> Result<()> {
 /// Remove a file and any now-empty parent directories, stopping at `root`.
 fn remove_file_and_empty_dirs(root: &Path, file: &Path) -> Result<()> {
     if file.exists() {
-        std::fs::remove_file(file)?;
+        fs_err::remove_file(file)?;
     }
     let mut dir = file.parent();
     while let Some(d) = dir {
@@ -608,7 +608,7 @@ fn remove_file_and_empty_dirs(root: &Path, file: &Path) -> Result<()> {
             break;
         }
         // Only removes if empty; a non-empty dir errors and we stop.
-        if std::fs::remove_dir(d).is_err() {
+        if fs_err::remove_dir(d).is_err() {
             break;
         }
         dir = d.parent();
@@ -638,7 +638,7 @@ fn walk_mirror(root: &Path, ignore: &Ignore) -> Result<Vec<(String, PathBuf, u64
     let mut out = Vec::new();
     let mut stack = vec![root.to_path_buf()];
     while let Some(dir) = stack.pop() {
-        let rd = std::fs::read_dir(&dir)
+        let rd = fs_err::read_dir(&dir)
             .with_context(|| format!("reading {} on mirror", crate::paths::short(&dir)))?;
         for entry in rd {
             let entry = entry?;
@@ -711,7 +711,7 @@ pub fn head(root: &Path) -> Result<Option<String>> {
 
 /// A commit's JSON as the mirror stores it.
 pub fn commit_bytes(root: &Path, hash: &str) -> Result<Vec<u8>> {
-    std::fs::read(dot(root).join("commits").join(format!("{hash}.json")))
+    fs_err::read(dot(root).join("commits").join(format!("{hash}.json")))
         .with_context(|| format!("reading mirror commit {}", short(hash)))
 }
 
@@ -818,7 +818,7 @@ pub fn plan_adapt(repo: &Repo, root: &Path) -> Result<AdaptPlan> {
             return Ok(Some(h.to_string()));
         }
         let abs = repo.root.join(path);
-        match std::fs::symlink_metadata(&abs) {
+        match fs_err::symlink_metadata(&abs) {
             Ok(m) if m.is_file() => Ok(Some(scan::hash_file(&abs)?)),
             Ok(_) => Ok(Some(String::new())),
             Err(_) => Ok(None),
@@ -913,12 +913,12 @@ pub fn apply_adapt(repo: &Repo, root: &Path, plan: AdaptPlan) -> Result<AdaptRep
     for (from, to) in &plan.renames {
         let dst = repo.root.join(to);
         ensure_parent(&dst)?;
-        std::fs::rename(repo.root.join(from), &dst).with_context(|| {
+        fs_err::rename(repo.root.join(from), &dst).with_context(|| {
             format!("moving {} in the working tree", crate::names::display(from))
         })?;
     }
     for path in &plan.deletes {
-        std::fs::remove_file(repo.root.join(path))
+        fs_err::remove_file(repo.root.join(path))
             .with_context(|| format!("removing {}", crate::names::display(path)))?;
     }
     for path in &plan.copies {
@@ -1003,16 +1003,16 @@ pub struct ConvertReport {
 /// *renamed* into their real paths (a copy only when the same content is used
 /// by several paths - dedup), so there's no bulk re-copy.
 pub fn backup_to_mirror(root: &Path) -> Result<ConvertReport> {
-    let head = std::fs::read_to_string(root.join("refs").join("main"))
+    let head = fs_err::read_to_string(root.join("refs").join("main"))
         .context("reading remote refs/main")?
         .trim()
         .to_string();
-    let commit: Commit = serde_json::from_slice(&std::fs::read(
+    let commit: Commit = serde_json::from_slice(&fs_err::read(
         root.join("commits").join(format!("{head}.json")),
     )?)?;
     let manifest = commit.files;
 
-    std::fs::create_dir_all(dot(root).join("objects"))?;
+    fs_err::create_dir_all(dot(root).join("objects"))?;
 
     // Materialize the playable tree from the blobs.
     let mut placed: HashMap<&str, &str> = HashMap::new(); // hash -> first real path
@@ -1022,10 +1022,10 @@ pub fn backup_to_mirror(root: &Path) -> Result<ConvertReport> {
         ensure_parent(&dest)?;
         if let Some(first) = placed.get(e.hash.as_str()) {
             // Same content already laid down elsewhere - copy it (dedup fan-out).
-            std::fs::copy(root.join(first), &dest)?;
+            fs_err::copy(root.join(first), &dest)?;
         } else {
             let blob = root.join("objects").join(&e.hash[..2]).join(&e.hash[2..]);
-            std::fs::rename(&blob, &dest).with_context(|| format!("materializing {}", e.path))?;
+            fs_err::rename(&blob, &dest).with_context(|| format!("materializing {}", e.path))?;
             placed.insert(&e.hash, &e.path);
         }
         files += 1;
@@ -1036,13 +1036,13 @@ pub fn backup_to_mirror(root: &Path) -> Result<ConvertReport> {
 
     // Relocate history + ref under `.stowe/`.
     move_flat(&root.join("commits"), &dot(root).join("commits"))?;
-    std::fs::create_dir_all(dot(root).join("refs"))?;
-    std::fs::rename(
+    fs_err::create_dir_all(dot(root).join("refs"))?;
+    fs_err::rename(
         root.join("refs").join("main"),
         dot(root).join("refs").join("main"),
     )?;
     for stale in ["objects", "commits", "refs"] {
-        let _ = std::fs::remove_dir_all(root.join(stale));
+        let _ = fs_err::remove_dir_all(root.join(stale));
     }
 
     Ok(ConvertReport { files, preserved })
@@ -1069,7 +1069,7 @@ pub fn mirror_to_backup(repo: &Repo, root: &Path) -> Result<ConvertReport> {
         );
         return Err(Drifted { drift, message }.into());
     }
-    std::fs::create_dir_all(root.join("objects"))?;
+    fs_err::create_dir_all(root.join("objects"))?;
 
     let mut files = 0;
     for e in &manifest {
@@ -1077,7 +1077,7 @@ pub fn mirror_to_backup(repo: &Repo, root: &Path) -> Result<ConvertReport> {
         let blob = root.join("objects").join(&e.hash[..2]).join(&e.hash[2..]);
         if !blob.exists() && real.exists() {
             ensure_parent(&blob)?;
-            std::fs::rename(&real, &blob)?;
+            fs_err::rename(&real, &blob)?;
             files += 1;
         }
         // Content already stored (dedup) goes with the file, as do the folders
@@ -1090,12 +1090,12 @@ pub fn mirror_to_backup(repo: &Repo, root: &Path) -> Result<ConvertReport> {
 
     // History + ref move back to the root.
     move_flat(&dot(root).join("commits"), &root.join("commits"))?;
-    std::fs::create_dir_all(root.join("refs"))?;
-    std::fs::rename(
+    fs_err::create_dir_all(root.join("refs"))?;
+    fs_err::rename(
         dot(root).join("refs").join("main"),
         root.join("refs").join("main"),
     )?;
-    let _ = std::fs::remove_dir_all(dot(root));
+    let _ = fs_err::remove_dir_all(dot(root));
 
     Ok(ConvertReport { files, preserved })
 }
@@ -1106,21 +1106,21 @@ fn move_object_tree(src: &Path, dst: &Path) -> Result<usize> {
         return Ok(0);
     }
     let mut moved = 0;
-    let shards: Vec<_> = std::fs::read_dir(src)?.collect::<std::result::Result<_, _>>()?;
+    let shards: Vec<_> = fs_err::read_dir(src)?.collect::<std::result::Result<_, _>>()?;
     for shard in shards {
         if !shard.file_type()?.is_dir() {
             continue;
         }
         let dst_shard = dst.join(shard.file_name());
         let blobs: Vec<_> =
-            std::fs::read_dir(shard.path())?.collect::<std::result::Result<_, _>>()?;
+            fs_err::read_dir(shard.path())?.collect::<std::result::Result<_, _>>()?;
         for blob in blobs {
-            std::fs::create_dir_all(&dst_shard)?;
+            fs_err::create_dir_all(&dst_shard)?;
             let target = dst_shard.join(blob.file_name());
             if target.exists() {
-                std::fs::remove_file(blob.path())?;
+                fs_err::remove_file(blob.path())?;
             } else {
-                std::fs::rename(blob.path(), target)?;
+                fs_err::rename(blob.path(), target)?;
                 moved += 1;
             }
         }
@@ -1133,10 +1133,10 @@ fn move_flat(src: &Path, dst: &Path) -> Result<()> {
     if !src.exists() {
         return Ok(());
     }
-    std::fs::create_dir_all(dst)?;
-    let entries: Vec<_> = std::fs::read_dir(src)?.collect::<std::result::Result<_, _>>()?;
+    fs_err::create_dir_all(dst)?;
+    let entries: Vec<_> = fs_err::read_dir(src)?.collect::<std::result::Result<_, _>>()?;
     for e in entries {
-        std::fs::rename(e.path(), dst.join(e.file_name()))?;
+        fs_err::rename(e.path(), dst.join(e.file_name()))?;
     }
     Ok(())
 }
@@ -1145,7 +1145,7 @@ fn move_flat(src: &Path, dst: &Path) -> Result<()> {
 
 fn read_ref(root: &Path) -> Result<Option<String>> {
     let p = dot(root).join("refs").join("main");
-    match std::fs::read_to_string(p) {
+    match fs_err::read_to_string(p) {
         Ok(s) => {
             let s = s.trim().to_string();
             Ok(if s.is_empty() { None } else { Some(s) })
@@ -1156,14 +1156,14 @@ fn read_ref(root: &Path) -> Result<Option<String>> {
 
 fn write_ref(root: &Path, hash: &str) -> Result<()> {
     let refs = dot(root).join("refs");
-    std::fs::create_dir_all(&refs)?;
-    std::fs::write(refs.join("main"), hash.as_bytes())?;
+    fs_err::create_dir_all(&refs)?;
+    fs_err::write(refs.join("main"), hash.as_bytes())?;
     Ok(())
 }
 
 fn read_commit_files(root: &Path, hash: &str) -> Result<Manifest> {
     let p = dot(root).join("commits").join(format!("{hash}.json"));
-    let bytes = std::fs::read(&p).with_context(|| format!("reading mirror commit {hash}"))?;
+    let bytes = fs_err::read(&p).with_context(|| format!("reading mirror commit {hash}"))?;
     let commit: crate::model::Commit = serde_json::from_slice(&bytes)?;
     Ok(commit.files)
 }

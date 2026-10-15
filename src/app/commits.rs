@@ -288,7 +288,7 @@ impl App {
             }
         };
         let dest = repo.root.join(&entry.path);
-        let Ok(meta) = std::fs::metadata(&dest) else {
+        let Ok(meta) = fs_err::metadata(&dest) else {
             return self.confirmed_now(remote, from, entry);
         };
         // Size and time against the last commit, the way a scan tells an edited

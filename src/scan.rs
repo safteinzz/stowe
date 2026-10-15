@@ -71,7 +71,7 @@ impl Progress {
 /// blake3 of a file's full content, streamed so we never load big files whole.
 pub fn hash_file(path: &std::path::Path) -> Result<String> {
     let mut hasher = blake3::Hasher::new();
-    let mut reader = BufReader::new(std::fs::File::open(path)?);
+    let mut reader = BufReader::new(fs_err::File::open(path)?);
     let mut buf = [0u8; 65536];
     loop {
         let n = reader.read(&mut buf)?;
@@ -145,7 +145,7 @@ pub fn recordable_path(root: &std::path::Path, abs: &std::path::Path) -> Result<
 /// edited on a remote since they were recorded, never land under a name that
 /// claims to be that version. Returns `false`, writing nothing, on a mismatch.
 pub fn copy_verified(src: &std::path::Path, dest: &std::path::Path, want: &str) -> Result<bool> {
-    let mut reader = BufReader::new(std::fs::File::open(src)?);
+    let mut reader = BufReader::new(fs_err::File::open(src)?);
     let mut landing = Landing::create(dest, want)?;
     let mut buf = vec![0u8; 1 << 20];
     loop {
@@ -163,7 +163,7 @@ pub fn copy_verified(src: &std::path::Path, dest: &std::path::Path, want: &str) 
 pub struct Landing {
     tmp: std::path::PathBuf,
     dest: std::path::PathBuf,
-    file: std::fs::File,
+    file: fs_err::File,
     hasher: blake3::Hasher,
     want: String,
 }
@@ -171,10 +171,10 @@ pub struct Landing {
 impl Landing {
     pub fn create(dest: &std::path::Path, want: &str) -> Result<Landing> {
         let parent = dest.parent().unwrap_or(std::path::Path::new("."));
-        std::fs::create_dir_all(parent)?;
+        fs_err::create_dir_all(parent)?;
         let name = dest.file_name().unwrap_or_default().to_string_lossy();
         let tmp = parent.join(format!(".{name}.stowe-part"));
-        let file = std::fs::File::create(&tmp)
+        let file = fs_err::File::create(&tmp)
             .with_context(|| format!("writing {}", crate::paths::short(dest)))?;
         Ok(Landing {
             tmp,
@@ -195,10 +195,10 @@ impl Landing {
     pub fn finish(self) -> Result<bool> {
         drop(self.file);
         if self.hasher.finalize().to_hex().as_str() != self.want {
-            let _ = std::fs::remove_file(&self.tmp);
+            let _ = fs_err::remove_file(&self.tmp);
             return Ok(false);
         }
-        std::fs::rename(&self.tmp, &self.dest)
+        fs_err::rename(&self.tmp, &self.dest)
             .with_context(|| format!("writing {}", crate::paths::short(&self.dest)))?;
         Ok(true)
     }
@@ -212,7 +212,7 @@ pub fn entry_for(
     abs: &std::path::Path,
     fingerprint: bool,
 ) -> Result<Entry> {
-    let meta = std::fs::metadata(abs)?;
+    let meta = fs_err::metadata(abs)?;
     let mtime = meta
         .modified()?
         .duration_since(UNIX_EPOCH)
@@ -294,7 +294,7 @@ struct Found {
 /// anything `.stoweignore` excludes (ignored directories are pruned whole, so
 /// their contents are never even stat'd).
 ///
-/// Uses `read_dir` + [`std::fs::DirEntry::metadata`], so each file's size/mtime
+/// Uses `read_dir` + [`fs_err::DirEntry::metadata`], so each file's size/mtime
 /// comes from an `fstatat` relative to the already-open directory fd. That
 /// matters enormously on deep trees over FUSE/network mounts: WalkDir's
 /// `metadata()` instead `stat`s the full absolute path, making the kernel
@@ -308,7 +308,7 @@ fn collect_files(
     prog: &Progress,
     ignore: &Ignore,
 ) -> Result<()> {
-    for entry in std::fs::read_dir(dir)? {
+    for entry in fs_err::read_dir(dir)? {
         let entry = entry?;
         if entry.file_name() == std::ffi::OsStr::new(".stowe") {
             continue;

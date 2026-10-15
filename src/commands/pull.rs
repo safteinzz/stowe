@@ -27,10 +27,10 @@ pub fn run(name: &str) -> Result<()> {
     while let Some(hash) = cur {
         let local = repo.dir.join("commits").join(format!("{hash}.json"));
         let bytes = if local.exists() {
-            std::fs::read(&local)?
+            fs_err::read(&local)?
         } else {
             let b = source.commit_bytes(&hash)?;
-            std::fs::write(&local, &b)?;
+            fs_err::write(&local, &b)?;
             new_commits += 1;
             b
         };

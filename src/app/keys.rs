@@ -190,7 +190,7 @@ fn handle(app: &mut App, key: KeyEvent, terminal: &mut DefaultTerminal) -> bool 
         Level::Repos => repos_key(app, code, ctrl, steps),
         Level::Remotes => remotes_key(app, code, ctrl, steps, terminal),
         Level::Scan => scan_key(app, code, ctrl, steps),
-        Level::Status => status_key(app, code, ctrl, steps),
+        Level::Status => status_key(app, code, ctrl, steps, terminal),
         Level::Commits => commits_key(app, code, ctrl, steps),
         Level::Files => files_key(app, code, ctrl, steps),
     }
@@ -314,15 +314,20 @@ fn scan_key(app: &mut App, code: KeyCode, ctrl: bool, steps: usize) -> bool {
     false
 }
 
-/// The working tree's changes on top, the selected file's versions below.
-fn status_key(app: &mut App, code: KeyCode, ctrl: bool, steps: usize) -> bool {
-    if !ctrl
-        && matches!(
-            code,
-            KeyCode::Enter | KeyCode::Char(' ' | 's' | 'u' | 'S' | 'U' | 'c')
-        )
-        && busy(app)
-    {
+/// Rows a ctrl-j/k moves the diff and columns a ctrl-h/l pans it, before a held
+/// key multiplies them.
+const SCROLL_STEP: u16 = 3;
+const PAN_STEP: u16 = 8;
+
+/// The working tree's changes on top, the selected file's diff below.
+fn status_key(
+    app: &mut App,
+    code: KeyCode,
+    ctrl: bool,
+    steps: usize,
+    terminal: &mut DefaultTerminal,
+) -> bool {
+    if !ctrl && matches!(code, KeyCode::Char(' ' | 's' | 'u' | 'S' | 'U' | 'c')) && busy(app) {
         return false;
     }
     if !ctrl {
@@ -330,7 +335,8 @@ fn status_key(app: &mut App, code: KeyCode, ctrl: bool, steps: usize) -> bool {
             .status_row()
             .map(|r| r.side == super::load::Side::Staged);
         match code {
-            KeyCode::Enter | KeyCode::Char(' ') => app.toggle(),
+            KeyCode::Enter => app.difftool(terminal),
+            KeyCode::Char(' ') => app.toggle(),
             KeyCode::Char('s') if staged == Some(false) => app.toggle(),
             KeyCode::Char('u') if staged == Some(true) => app.toggle(),
             KeyCode::Char('S') => app.stage_all(),
@@ -345,8 +351,15 @@ fn status_key(app: &mut App, code: KeyCode, ctrl: bool, steps: usize) -> bool {
             return false;
         }
     }
-    if ctrl && (is_down(code) || is_up(code)) {
-        app.hsel.step(is_down(code), steps);
+    let by = |step: u16| step.saturating_mul(u16::try_from(steps).unwrap_or(u16::MAX));
+    if ctrl && is_down(code) {
+        app.dscroll = app.dscroll.saturating_add(by(SCROLL_STEP));
+    } else if ctrl && is_up(code) {
+        app.dscroll = app.dscroll.saturating_sub(by(SCROLL_STEP));
+    } else if ctrl && is_right(code) {
+        app.dhscroll = app.dhscroll.saturating_add(by(PAN_STEP));
+    } else if ctrl && is_left(code) {
+        app.dhscroll = app.dhscroll.saturating_sub(by(PAN_STEP));
     } else if is_down(code) || is_up(code) {
         if app.ssel.step(is_down(code), steps) {
             app.pending = true;

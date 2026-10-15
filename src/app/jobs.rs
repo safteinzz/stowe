@@ -459,7 +459,7 @@ impl App {
     }
 
     pub(super) fn alert(&mut self, title: impl Into<String>, e: &anyhow::Error) {
-        let words: Vec<String> = format!("{e:#}")
+        let words: Vec<String> = crate::errors::words(e)
             .lines()
             .take(WORDS)
             .map(str::to_string)

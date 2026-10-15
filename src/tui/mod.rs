@@ -7,6 +7,9 @@
 /// nothing.
 pub const FRAME: std::time::Duration = std::time::Duration::from_millis(33);
 
+pub mod difffeed;
+pub mod difftool;
+pub mod highlight;
 pub mod input;
 pub mod widgets;
 
@@ -85,4 +88,11 @@ fn interrupts_end_us() -> &'static Arc<AtomicBool> {
 pub fn clamp_scroll(scroll: u16, total_lines: usize, viewport: u16) -> u16 {
     let max = (total_lines.min(u16::MAX as usize) as u16).saturating_sub(viewport);
     scroll.min(max)
+}
+
+/// Clamp horizontal scroll so you can't pan past the longest line. `cell_w` is
+/// roughly one side's visible width.
+pub fn clamp_hscroll(hscroll: u16, max_line: usize, cell_w: u16) -> u16 {
+    let max = (max_line.min(u16::MAX as usize) as u16).saturating_sub(cell_w);
+    hscroll.min(max)
 }

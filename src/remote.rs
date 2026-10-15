@@ -81,14 +81,14 @@ fn build_operator(url: &str) -> Result<Operator> {
         anyhow!("unsupported remote `{url}` - use a path, `local:/path` or `s3://`")
     })?;
     let local_path = root.to_string_lossy();
-    std::fs::create_dir_all(&root)
+    fs_err::create_dir_all(&root)
         .with_context(|| format!("creating remote dir {}", crate::paths::short(&root)))?;
     // Write to a temp file and rename into place on close, so a killed push
     // (Ctrl+C, crash, unplugged drive) never leaves a corrupt file sitting
     // under its final content-hash key - which future pushes would then
     // mistake for a complete, valid object and skip forever.
     let tmp_dir = root.join(".stowe-tmp");
-    std::fs::create_dir_all(&tmp_dir)?;
+    fs_err::create_dir_all(&tmp_dir)?;
     Ok(Operator::new(
         services::Fs::default()
             .root(&local_path)
@@ -361,7 +361,7 @@ pub(crate) fn on_local_disk(path: &Path) -> bool {
     let device_of = |p: &Path| -> Option<u64> {
         let mut cur = Some(p);
         while let Some(c) = cur {
-            if let Ok(md) = std::fs::metadata(c) {
+            if let Ok(md) = fs_err::metadata(c) {
                 return Some(md.dev());
             }
             cur = c.parent();
@@ -402,7 +402,10 @@ pub(crate) fn run_mount(name: &str, cmd: &str) -> Result<()> {
 
     let mut child = match command.stderr(std::process::Stdio::piped()).spawn() {
         Ok(child) => child,
-        Err(e) => bail!("could not run the mount command for `{name}`: {e}"),
+        Err(e) => bail!(
+            "could not run the mount command for `{name}`: {}",
+            crate::errors::io_words(&e)
+        ),
     };
     // What it writes to stderr still reaches the terminal as it comes, a
     // prompt with no newline included, and its tail is kept for a screen that
@@ -461,7 +464,10 @@ pub(crate) fn run_mount(name: &str, cmd: &str) -> Result<()> {
             cancelled: false,
         }
         .into()),
-        Err(e) => bail!("could not wait for the mount command for `{name}`: {e}"),
+        Err(e) => bail!(
+            "could not wait for the mount command for `{name}`: {}",
+            crate::errors::io_words(&e)
+        ),
     }
 }
 

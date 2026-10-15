@@ -33,7 +33,7 @@ stowe push drive                      # copy it there
 ![stowe istatus staging one new file, then the rest, and committing them through a form](https://gitlab.com/safteinzz/stowe/-/raw/main/readme-assets/status.gif)
 
 ```bash
-stowe istatus    # stage, unstage and commit in one screen
+stowe istatus    # see a text file's diff, stage and commit in one screen
 stowe status     # what changed since the last commit
 stowe status -s  # the same in one line, for a shell prompt
 ```
@@ -167,7 +167,7 @@ itself on stderr and exits non-zero.
 ## Where it keeps things
 
 ```
-.stowe/            the repo: history, what is staged and your remotes
+.stowe/            the repo: history, what is staged, your remotes and copies of small text files
 .stoweignore       the paths every scan skips
 <remote>/.stowe/   the remote's history, and every replaced or deleted version
 ```
@@ -200,7 +200,9 @@ on every single push.
   fingerprinted from the decoded signal, so a move survives a tag edit.
 - Naming a file outright (`stowe add junk.tmp`) stages it even if it is ignored.
   An exact path you typed wins.
-- Linear history: one `main`, no branches, no content diffs.
+- Linear history: one `main`, no branches.
+- Text files up to 1 MB are kept in `.stowe/` as they are staged, so `istatus`
+  shows their diff without a remote. Anything else is known here only by its hash.
 - `--mount CMD` runs your own script when a remote is not reachable, so pushing
   to an external drive or a phone over sshfs mounts it on demand.
 - Replaced and deleted versions are kept in the remote's `.stowe/objects/`, so

@@ -33,7 +33,7 @@ pub fn run(base: &Path, depth: usize) -> Result<()> {
             Ok(s) => outln!("{}", line(&s, name_w)),
             Err(e) => {
                 failed = true;
-                eprintln!("{name}: {e}");
+                eprintln!("{name}: {}", crate::errors::words(&e));
             }
         }
     }

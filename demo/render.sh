@@ -18,6 +18,12 @@ IMAGE=localhost/stowe-render
 
 TAPES=("$@")
 [ ${#TAPES[@]} -gt 0 ] || TAPES=(shots shots-short plain history status remote scan repos)
+TAPES=("${TAPES[@]%.tape}")
+# vhs exits 0 on a tape that is not there, so a typo would render nothing and
+# still say done.
+for t in "${TAPES[@]}"; do
+  [ -f "$t.tape" ] || { echo "no tape \`$t.tape\` in demo/: pick one of $(ls *.tape | sed 's/\.tape$//' | paste -sd ' ')" >&2; exit 2; }
+done
 
 (cd .. && cargo build --release)
 # The Dockerfile is the whole build context: nothing in this folder is copied in.

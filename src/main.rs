@@ -26,8 +26,10 @@ mod app;
 mod audio;
 mod commands;
 mod diff;
+mod errors;
 mod history;
 mod ignore;
+mod kept;
 mod mirror;
 mod model;
 mod names;
@@ -226,7 +228,7 @@ enum Cmd {
     #[command(name = "self", subcommand)]
     Selfie(selfcmd::Cmd),
     /// Interactive status (TUI)
-    ///   this repo's changes · ↵ stages or unstages a file, c commits
+    ///   this repo's changes, each text file's diff · ↵ git difftool, s/u stage, c commits
     #[command(verbatim_doc_comment)]
     Istatus,
     /// Interactive history (TUI)
@@ -259,7 +261,14 @@ enum Cmd {
     },
 }
 
-fn main() -> Result<()> {
+fn main() {
+    if let Err(e) = run() {
+        eprintln!("error: {}", errors::words(&e));
+        std::process::exit(1);
+    }
+}
+
+fn run() -> Result<()> {
     // The command list is rendered here rather than by clap, which has no way
     // to give one subcommand a different heading from another. Everything in
     // it still comes from clap's own metadata.

@@ -58,7 +58,7 @@ pub fn fingerprint(path: &Path) -> Result<Option<String>> {
 /// hash. Hashes the sample rate + channel count first so two clips that share
 /// samples at different rates/layouts don't collide.
 fn decode_hash(path: &Path) -> Result<Option<String>> {
-    let file = std::fs::File::open(path)?;
+    let file = fs_err::File::open(path)?.into_file();
     let mss = MediaSourceStream::new(Box::new(file), Default::default());
 
     let mut hint = Hint::new();

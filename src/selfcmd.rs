@@ -58,7 +58,10 @@ fn update(yes: bool) -> Result<()> {
             status.code().unwrap_or(1)
         ),
         Err(e) => {
-            bail!("could not run cargo: {e} - is it installed and on PATH? (https://rustup.rs)")
+            bail!(
+                "could not run `cargo` ({}): install it from https://rustup.rs or put it on `PATH`",
+                crate::errors::io_words(&e)
+            )
         }
     }
 }
@@ -96,7 +99,10 @@ fn latest() -> Result<String> {
     let out = match out {
         Ok(out) => out,
         Err(e) => {
-            bail!("could not run cargo: {e} - is it installed and on PATH? (https://rustup.rs)")
+            bail!(
+                "could not run `cargo` ({}): install it from https://rustup.rs or put it on `PATH`",
+                crate::errors::io_words(&e)
+            )
         }
     };
     if !out.status.success() {

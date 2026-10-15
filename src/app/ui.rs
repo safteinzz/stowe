@@ -2,6 +2,7 @@
 //! selected row holds underneath, the scan's bar above both, and the footer.
 
 use super::load::{Reach, Side, StatusRow};
+use super::patch;
 use super::{App, Level, Pane, Sel, commits, repos, status};
 use crate::diff::common;
 use crate::history::{Change, Kind};
@@ -10,15 +11,18 @@ use crate::model::short;
 use crate::names::display;
 use crate::repos::Behind;
 use crate::time::short_time;
-use crate::tui::input::{CTRL_Y_MOVE, X_MOVE, Y_MOVE};
+use crate::tui::highlight::render_prepared;
+use crate::tui::input::{CTRL_X_MOVE, CTRL_Y_MOVE, X_MOVE, Y_MOVE};
 use crate::tui::widgets::{
     BACK, CANCEL, CREATE, DEL, EDIT, FILTER_KEYS, FIND, HELP, HelpSection, Modal, QUIT, REFRESH,
-    SEP, confirm_popup, key_footer, list_scrollbar, pane_block, scope_tabs, typed_popup,
+    SEP, confirm_popup, diff_hscrollbar, diff_scrollbar, key_footer, list_scrollbar, pane_block,
+    scope_tabs, typed_popup,
 };
+use crate::tui::{clamp_hscroll, clamp_scroll};
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
-use ratatui::text::{Line, Span};
+use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{List, ListItem, Paragraph};
 
 /// Width a repo's or a remote's name is padded to, at most.
@@ -111,7 +115,7 @@ pub(super) fn draw(frame: &mut Frame, app: &mut App) {
             );
             let items = status_items(app);
             list(frame, top, items, t, &mut app.ssel);
-            draw_versions(frame, bottom, app, edit_bot);
+            draw_patch(frame, bottom, app);
         }
         Level::Commits => {
             draw_log(frame, top, app, "commits", Pane::Top, edit_top, true);
@@ -220,6 +224,36 @@ fn draw_versions(frame: &mut Frame, area: Rect, app: &mut App, editing: bool) {
     list(frame, area, items, t, &mut app.hsel);
 }
 
+/// The selected status row's diff, side by side, scrolled
+/// and panned with Ctrl.
+fn draw_patch(frame: &mut Frame, area: Rect, app: &mut App) {
+    let title = match app.status_row() {
+        Some(r) => format!(" {} {} ", display(&r.change.shown()), patch::tag(r.side)),
+        None => " (nothing to show) ".to_string(),
+    };
+    let inner = area.width.saturating_sub(2);
+    let cell = app.prepared.cell_width(inner);
+    app.dhscroll = clamp_hscroll(app.dhscroll, app.prepared.max_line(), cell);
+    let diff = render_prepared(&app.prepared, inner, app.dhscroll);
+    app.dscroll = clamp_scroll(app.dscroll, diff.lines.len(), area.height.saturating_sub(2));
+    // An empty diff and one still being prepared look the same, so say which.
+    let body = if diff.lines.is_empty() && app.dfeed.slow() {
+        Text::from(Line::from(Span::styled(
+            "  loading…",
+            Style::default().add_modifier(Modifier::DIM),
+        )))
+    } else {
+        diff
+    };
+    let total = body.lines.len();
+    let widget = Paragraph::new(body)
+        .block(pane_block(title, true))
+        .scroll((app.dscroll, 0));
+    frame.render_widget(widget, area);
+    diff_scrollbar(frame, area, total, app.dscroll);
+    diff_hscrollbar(frame, area, app.prepared.max_line(), cell, app.dhscroll);
+}
+
 fn draw_footer(frame: &mut Frame, area: Rect, app: &App) {
     if app.note.is_none()
         && app.command.is_none()
@@ -280,7 +314,7 @@ fn actions(app: &App) -> Vec<&'static str> {
     match app.level {
         Level::Repos | Level::Commits | Level::Scan => keys.push("↵ open"),
         Level::Files => keys.push("↵ restore"),
-        Level::Status => keys.extend(["↵ stage/unstage", "S stage all", "U unstage all"]),
+        Level::Status => keys.extend(["↵ difftool", "s stage", "u unstage", "space flip"]),
         Level::Remotes => {
             if let Some(r) = app.remote() {
                 keys.push("↵ push");
@@ -383,14 +417,32 @@ const SCAN: HelpSection = (
     ],
 );
 const STATUS: HelpSection = (
-    "status",
+    "stage",
     &[
-        ("↵ space", "stage, or unstage what is staged"),
-        ("s u", "stage, unstage"),
-        ("S U", "stage every row, unstage everything"),
+        ("s", "stage"),
+        ("u", "unstage"),
+        ("space", "flip between the two"),
+        ("S", "stage every row"),
+        ("U", "unstage everything"),
         ("c", "create a commit from what is staged"),
         ("", "S staged · M not staged · ? untracked"),
         ("", "staging decodes audio, so a song keeps its history"),
+    ],
+);
+const DIFF: HelpSection = (
+    "diff",
+    &[
+        (CTRL_Y_MOVE, "scroll"),
+        (CTRL_X_MOVE, "pan"),
+        (
+            "↵",
+            "git difftool, or your editor when only one version is here",
+        ),
+        (
+            "",
+            "text up to 1 MB is kept as it is staged, so its diff needs no remote",
+        ),
+        ("", "anything else shows its size"),
     ],
 );
 const COMMITS: HelpSection = (
@@ -453,7 +505,12 @@ const IN_THIS_HELP: HelpSection = (
 /// Every key the app answers to, for the levels it can reach from where it
 /// was entered.
 fn help(app: &App) -> Vec<HelpSection> {
-    let mut sections = vec![MOVING, BELOW, EVERYWHERE];
+    let below = if app.start == Level::Status {
+        DIFF
+    } else {
+        BELOW
+    };
+    let mut sections = vec![MOVING, below, EVERYWHERE];
     match app.start {
         Level::Repos => sections.push(REPOS),
         Level::Remotes => sections.push(REMOTES),

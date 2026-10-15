@@ -3,11 +3,15 @@
 
 use super::jobs::Job;
 use super::load::{self, Side, StatusRow};
+use super::patch::{self, Open};
 use super::{App, FormFor, Level};
 use crate::commands::{commit, unstage};
 use crate::model::count;
 use crate::repo::Repo;
+use crate::tui::difftool::{DiffTool, run_difftool, run_editor};
+use crate::tui::highlight::{DiffContext, RenderedDiff};
 use crate::tui::widgets::{Field, Form};
+use ratatui::DefaultTerminal;
 
 #[derive(Clone, Copy, PartialEq)]
 pub enum Scope {
@@ -81,16 +85,58 @@ impl App {
         self.ssel.idx().map(|i| &self.status[i])
     }
 
-    /// The pane below: the selected file's versions in history.
+    /// Ask for the selected file's diff. Reading it and the syntect pass run
+    /// on a worker, so moving the cursor never waits for either.
     pub(super) fn enter_status(&mut self) {
-        let path = self.status_row().map(|r| match &r.change.from {
-            Some(from) => from.clone(),
-            None => r.change.path.clone(),
-        });
-        self.show_history(path);
+        self.prepared = RenderedDiff::default();
+        self.dscroll = 0;
+        self.dhscroll = 0;
+        let Some(r) = self.status_row() else {
+            self.dfeed.idle();
+            return;
+        };
+        let (repo, side, change) = (Repo::at(self.repo.clone()), r.side, r.change.clone());
+        self.dfeed
+            .request(move || match patch::sides(&repo, side, &change) {
+                Ok(sides) => patch::raw(&sides),
+                Err(e) => (
+                    format!("could not read it: {}", crate::errors::words(&e)),
+                    DiffContext::default(),
+                ),
+            });
     }
 
-    /// `↵`: stage what is not staged, unstage what is. A move is both its paths.
+    /// `↵`: the selected file in the user's `git difftool`, the comparison the
+    /// pane shows, or in their editor when only one version of it is here.
+    /// Read again after, since either may have edited the file.
+    pub(super) fn difftool(&mut self, terminal: &mut DefaultTerminal) {
+        let Some(r) = self.status_row() else {
+            return;
+        };
+        let (side, change) = (r.side, r.change.clone());
+        let repo = Repo::at(self.repo.clone());
+        let scratch = std::env::temp_dir().join(format!("stowe-difftool-{}", std::process::id()));
+        let picked = match patch::sides(&repo, side, &change) {
+            Ok(sides) => patch::open(&repo, &sides, side, &scratch),
+            Err(e) => Open::Nothing(crate::errors::words(&e)),
+        };
+        let outcome = match picked {
+            Open::Diff(old, new) => run_difftool(terminal, self.enhanced, &repo.root, &old, &new),
+            Open::Edit(path) => run_editor(terminal, self.enhanced, &path),
+            Open::Nothing(why) => {
+                DiffTool::Note(format!("nothing to open for {}: {why}", change.path))
+            }
+        };
+        let _ = fs_err::remove_dir_all(&scratch);
+        match outcome {
+            DiffTool::Quiet => {}
+            DiffTool::Note(m) => self.set_failed(m),
+            DiffTool::Failed(modal) => self.modal = Some(modal),
+        }
+        self.request_status();
+    }
+
+    /// `space`: stage what is not staged, unstage what is. A move is both its paths.
     pub(super) fn toggle(&mut self) {
         let Some(r) = self.status_row() else {
             return;
@@ -145,7 +191,7 @@ impl App {
     /// `c`: a form for the commit's message.
     pub(super) fn create_commit(&mut self) {
         if !self.status.iter().any(|r| r.side == Side::Staged) {
-            self.set_failed("nothing staged to commit: ↵ stages a row, S every row");
+            self.set_failed("nothing staged to commit: s stages a row, S every row");
             return;
         }
         let form = Form::new(
@@ -168,7 +214,6 @@ impl App {
                     crate::model::short(&hash)
                 ));
                 self.request_status();
-                self.request_log();
                 true
             }
             Err(e) => {

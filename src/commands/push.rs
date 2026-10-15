@@ -196,7 +196,7 @@ pub(crate) fn push_objects(
     for (hash, _) in &history {
         let key = format!("commits/{hash}.json");
         if !backend.exists(&key)? {
-            let bytes = std::fs::read(repo.dir.join("commits").join(format!("{hash}.json")))?;
+            let bytes = fs_err::read(repo.dir.join("commits").join(format!("{hash}.json")))?;
             backend.put_bytes(&key, &bytes)?;
             new_commits += 1;
         }

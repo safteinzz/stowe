@@ -31,7 +31,7 @@ fn look(dir: &Path, depth: usize, found: &mut Vec<PathBuf>) {
     if depth == 0 || dir.join(".stowe").is_dir() {
         return;
     }
-    let Ok(rd) = std::fs::read_dir(dir) else {
+    let Ok(rd) = fs_err::read_dir(dir) else {
         return;
     };
     for entry in rd.flatten() {
@@ -169,13 +169,13 @@ mod tests {
         // would offer to commit into a backup.
         let tmp = tempfile::tempdir().expect("temp dir");
         let base = tmp.path();
-        let mk = |p: &str| std::fs::create_dir_all(base.join(p)).expect("fixture dir");
+        let mk = |p: &str| fs_err::create_dir_all(base.join(p)).expect("fixture dir");
         mk("music/.stowe/commits");
-        std::fs::write(base.join("music/.stowe/HEAD"), "").expect("HEAD");
+        fs_err::write(base.join("music/.stowe/HEAD"), "").expect("HEAD");
         mk("drive/.stowe/refs");
-        std::fs::write(base.join("drive/.stowe/refs/main"), "abc").expect("ref");
+        fs_err::write(base.join("drive/.stowe/refs/main"), "abc").expect("ref");
         mk("music/inner/.stowe");
-        std::fs::write(base.join("music/inner/.stowe/HEAD"), "").expect("HEAD");
+        fs_err::write(base.join("music/inner/.stowe/HEAD"), "").expect("HEAD");
 
         let found = find(base, 3);
         assert_eq!(

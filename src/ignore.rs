@@ -54,7 +54,7 @@ impl Ignore {
     /// nothing", which is what every repo made before this feature existed
     /// wants.
     pub fn load(root: &Path) -> Ignore {
-        let text = std::fs::read_to_string(root.join(".stoweignore")).unwrap_or_default();
+        let text = fs_err::read_to_string(root.join(".stoweignore")).unwrap_or_default();
         Ignore::parse(&text)
     }
 

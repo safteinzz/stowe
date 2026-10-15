@@ -47,8 +47,8 @@ impl Repo {
         if dir.exists() {
             bail!("`.stowe` already exists at {}", dir.display());
         }
-        std::fs::create_dir_all(dir.join("commits"))?;
-        std::fs::write(dir.join("HEAD"), b"")?;
+        fs_err::create_dir_all(dir.join("commits"))?;
+        fs_err::write(dir.join("HEAD"), b"")?;
         let repo = Repo {
             root: path.to_path_buf(),
             dir,
@@ -61,13 +61,13 @@ impl Repo {
 
     /// The commit hash HEAD points at, or `None` if there are no commits yet.
     pub fn head(&self) -> Result<Option<String>> {
-        let s = std::fs::read_to_string(self.dir.join("HEAD")).unwrap_or_default();
+        let s = fs_err::read_to_string(self.dir.join("HEAD")).unwrap_or_default();
         let s = s.trim().to_string();
         Ok(if s.is_empty() { None } else { Some(s) })
     }
 
     pub fn set_head(&self, hash: &str) -> Result<()> {
-        std::fs::write(self.dir.join("HEAD"), hash.as_bytes())?;
+        fs_err::write(self.dir.join("HEAD"), hash.as_bytes())?;
         Ok(())
     }
 
@@ -78,11 +78,11 @@ impl Repo {
         if !p.exists() {
             return Ok(Config::default());
         }
-        Ok(serde_json::from_slice(&std::fs::read(p)?)?)
+        Ok(serde_json::from_slice(&fs_err::read(p)?)?)
     }
 
     pub fn save_config(&self, cfg: &Config) -> Result<()> {
-        std::fs::write(self.dir.join("config"), serde_json::to_vec_pretty(cfg)?)?;
+        fs_err::write(self.dir.join("config"), serde_json::to_vec_pretty(cfg)?)?;
         Ok(())
     }
 
@@ -94,7 +94,7 @@ impl Repo {
 
     pub fn read_commit(&self, hash: &str) -> Result<Commit> {
         let p = self.commit_path(hash);
-        let bytes = std::fs::read(&p).with_context(|| format!("missing commit {hash}"))?;
+        let bytes = fs_err::read(&p).with_context(|| format!("missing commit {hash}"))?;
         Ok(serde_json::from_slice(&bytes)?)
     }
 
@@ -102,7 +102,7 @@ impl Repo {
     pub fn write_commit(&self, commit: &Commit) -> Result<String> {
         let bytes = serde_json::to_vec_pretty(commit)?;
         let hash = blake3::hash(&bytes).to_hex().to_string();
-        std::fs::write(self.commit_path(&hash), &bytes)?;
+        fs_err::write(self.commit_path(&hash), &bytes)?;
         Ok(hash)
     }
 
@@ -138,18 +138,18 @@ impl Repo {
         if !p.exists() {
             return Ok(None);
         }
-        Ok(Some(serde_json::from_slice(&std::fs::read(p)?)?))
+        Ok(Some(serde_json::from_slice(&fs_err::read(p)?)?))
     }
 
     pub fn write_index(&self, manifest: &Manifest) -> Result<()> {
-        std::fs::write(self.index_path(), serde_json::to_vec_pretty(manifest)?)?;
+        fs_err::write(self.index_path(), serde_json::to_vec_pretty(manifest)?)?;
         Ok(())
     }
 
     pub fn clear_index(&self) -> Result<()> {
         let p = self.index_path();
         if p.exists() {
-            std::fs::remove_file(p)?;
+            fs_err::remove_file(p)?;
         }
         Ok(())
     }
@@ -166,7 +166,7 @@ impl Repo {
 
     /// Forget every push to `name`, for a remote that now points somewhere new.
     pub fn forget_remote_head(&self, name: &str) -> Result<()> {
-        match std::fs::remove_file(self.remote_ref(name)?) {
+        match fs_err::remove_file(self.remote_ref(name)?) {
             Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e.into()),
             _ => Ok(()),
         }
@@ -178,7 +178,7 @@ impl Repo {
     /// it has written to this remote before, and so may not silently recreate
     /// the remote's folder when the drive isn't mounted.
     pub fn remote_head(&self, name: &str) -> Result<Option<String>> {
-        match std::fs::read_to_string(self.remote_ref(name)?) {
+        match fs_err::read_to_string(self.remote_ref(name)?) {
             Ok(s) => {
                 let s = s.trim().to_string();
                 Ok(if s.is_empty() { None } else { Some(s) })
@@ -190,9 +190,9 @@ impl Repo {
     pub fn set_remote_head(&self, name: &str, hash: &str) -> Result<()> {
         let p = self.remote_ref(name)?;
         if let Some(dir) = p.parent() {
-            std::fs::create_dir_all(dir)?;
+            fs_err::create_dir_all(dir)?;
         }
-        std::fs::write(p, hash.as_bytes())?;
+        fs_err::write(p, hash.as_bytes())?;
         Ok(())
     }
 }

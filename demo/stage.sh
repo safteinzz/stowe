@@ -157,9 +157,15 @@ story() {
   in_archive push drive > /dev/null
   blob "$ARCHIVE/Photos/2019-iceland/DSC_0602.NEF" 312
   blob "$ARCHIVE/Photos/2019-iceland/DSC_0611.NEF" 276
+  printf '%s\n' "# Glacier walk" "" "day one: DSC_0402 to DSC_0588, overcast" \
+    "day two: DSC_0590 to DSC_0611, sun after noon" "" "keepers: 0412, 0533" \
+    > "$ARCHIVE/Photos/2019-iceland/notes.md"
   in_archive add -A > /dev/null
   in_archive commit -m "the last two from the glacier walk" > /dev/null
   # Never pushed: the drive is one commit behind and its push plan is these.
+  printf '%s\n' "# Glacier walk" "" "day one: DSC_0402 to DSC_0588, overcast" \
+    "day two: DSC_0590 to DSC_0611, sun after noon" "" "keepers: 0412, 0533, 0602" \
+    "print 0602 at 60x90 for the hallway" > "$ARCHIVE/Photos/2019-iceland/notes.md"
   blob "$ARCHIVE/Renders/kitchen-final-4k-v2.exr" 520
   mv "$ARCHIVE/Datasets/census-2021/migration.parquet" "$ARCHIVE/Datasets/census-2021/migration-2021.parquet"
   in_archive add "Datasets" > /dev/null
