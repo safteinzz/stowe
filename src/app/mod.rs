@@ -569,6 +569,38 @@ impl App {
         })
     }
 
+    /// [`App::pane_sel`], to read.
+    fn pane_sel_ref(&self, pane: Pane) -> Option<&Sel> {
+        Some(match (self.level, pane) {
+            (Level::Repos, Pane::Top) => &self.rsel,
+            (Level::Repos, Pane::Bottom) | (Level::Commits, Pane::Top) => &self.csel,
+            (Level::Remotes, Pane::Top) => &self.msel,
+            (Level::Scan, Pane::Top) => return None,
+            (Level::Remotes | Level::Scan | Level::Commits, Pane::Bottom)
+            | (Level::Files, Pane::Top) => &self.fsel,
+            (Level::Status, Pane::Top) => &self.ssel,
+            (Level::Status, Pane::Bottom) => return None,
+            (Level::Files, Pane::Bottom) => &self.hsel,
+        })
+    }
+
+    /// The filter an Enter kept on this level, top pane first: what `esc`
+    /// drops before it steps back, and what the footer shows.
+    pub(super) fn kept_query(&self) -> Option<(Pane, &str)> {
+        [Pane::Top, Pane::Bottom].into_iter().find_map(|pane| {
+            let text = self.pane_sel_ref(pane)?.query.text.as_str();
+            (!text.is_empty()).then_some((pane, text))
+        })
+    }
+
+    /// `esc` on a kept filter: the pane shows its whole scope again.
+    fn drop_query(&mut self, pane: Pane) {
+        if let Some(sel) = self.pane_sel(pane) {
+            sel.query.open();
+        }
+        self.refilter(pane);
+    }
+
     fn open_query(&mut self, pane: Pane) {
         let Some(sel) = self.pane_sel(pane) else {
             return;

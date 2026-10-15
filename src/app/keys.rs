@@ -152,6 +152,12 @@ fn handle(app: &mut App, key: KeyEvent, terminal: &mut DefaultTerminal) -> bool 
         app.help();
         return false;
     }
+    if is_back(code)
+        && let Some((pane, _)) = app.kept_query()
+    {
+        app.drop_query(pane);
+        return false;
+    }
     if code == KeyCode::Char(':') {
         app.command = Some(CommandLine::default());
         return false;

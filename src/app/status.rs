@@ -150,14 +150,9 @@ impl App {
         }
     }
 
-    /// `S`: stage every row not staged.
+    /// `S`: stage every visible row not staged.
     pub(super) fn stage_all(&mut self) {
-        let paths: Vec<String> = self
-            .status
-            .iter()
-            .filter(|r| r.side != Side::Staged)
-            .flat_map(|r| std::iter::once(r.change.path.clone()).chain(r.change.from.clone()))
-            .collect();
+        let paths = self.visible_paths(|side| side != Side::Staged);
         if paths.is_empty() {
             self.set_status("nothing to stage");
             return;
@@ -165,19 +160,26 @@ impl App {
         self.pending_job = Some(Job::Stage(paths));
     }
 
-    /// `U`: unstage everything.
+    /// `U`: unstage every visible staged row.
     pub(super) fn unstage_all(&mut self) {
-        let paths: Vec<String> = self
-            .status
-            .iter()
-            .filter(|r| r.side == Side::Staged)
-            .flat_map(|r| std::iter::once(r.change.path.clone()).chain(r.change.from.clone()))
-            .collect();
+        let paths = self.visible_paths(|side| side == Side::Staged);
         if paths.is_empty() {
             self.set_status("nothing staged");
             return;
         }
         self.unstage(&paths);
+    }
+
+    /// The paths, a move's old one included, of the rows the scope and `/`
+    /// leave on screen whose side is `wanted`, so a hidden row is never touched.
+    fn visible_paths(&self, wanted: fn(Side) -> bool) -> Vec<String> {
+        self.ssel
+            .visible
+            .iter()
+            .map(|&i| &self.status[i])
+            .filter(|r| wanted(r.side))
+            .flat_map(|r| std::iter::once(r.change.path.clone()).chain(r.change.from.clone()))
+            .collect()
     }
 
     fn unstage(&mut self, paths: &[String]) {

@@ -295,6 +295,14 @@ fn draw_footer(frame: &mut Frame, area: Rect, app: &App) {
     } else {
         actions(app)
     };
+    let kept = app.kept_query().map(|(_, q)| format!("/{q}"));
+    let mut keys: Vec<&str> = keys;
+    if let Some(kept) = &kept
+        && app.editing.is_none()
+        && !(app.level == Level::Scan && app.typing)
+    {
+        keys.splice(0..0, [kept.as_str(), BACK]);
+    }
     frame.render_widget(
         key_footer(
             &keys,
@@ -422,8 +430,8 @@ const STATUS: HelpSection = (
         ("s", "stage"),
         ("u", "unstage"),
         ("space", "flip between the two"),
-        ("S", "stage every row"),
-        ("U", "unstage everything"),
+        ("S", "stage every row on screen"),
+        ("U", "unstage every row on screen"),
         ("c", "create a commit from what is staged"),
         ("", "S staged · M not staged · ? untracked"),
         ("", "staging decodes audio, so a song keeps its history"),
