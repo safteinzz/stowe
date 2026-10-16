@@ -151,7 +151,6 @@ impl App {
         if let Some(from) = &r.change.from {
             rows.push(row("was", from.as_str()));
         }
-        rows.push(row("versions", self.hist.len().to_string()));
         Some((
             format!("file {}", leaf(&r.change.path)),
             rows,
