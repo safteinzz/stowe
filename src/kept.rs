@@ -27,6 +27,11 @@ pub fn read(repo: &Repo, hash: &str) -> Option<String> {
     String::from_utf8(fs_err::read(object(repo, hash)).ok()?).ok()
 }
 
+/// Whether a copy of the content `hash` names is kept, without reading it.
+pub fn has(repo: &Repo, hash: &str) -> bool {
+    object(repo, hash).exists()
+}
+
 /// Keep a copy of every small text file in `staged` whose content `before`
 /// did not already hold. A file that changed since it was hashed is skipped,
 /// so a copy is always exactly the content its name says.

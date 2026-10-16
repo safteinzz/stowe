@@ -51,6 +51,13 @@ pub(super) enum Job {
         entry: Entry,
     },
     Stage(Vec<String>),
+    /// Put a status row's paths back as the last commit has them, the bytes
+    /// from `remote` when no copy of them is here.
+    Discard {
+        what: Discard,
+        paths: Vec<String>,
+        remote: Option<String>,
+    },
 }
 
 impl Job {
@@ -61,6 +68,7 @@ impl Job {
             Job::Convert { name, to } => format!("converting {name} to a {}", to.name()),
             Job::Restore { entry, .. } => format!("restoring {}", entry.path),
             Job::Stage(_) => "staging".to_string(),
+            Job::Discard { paths, .. } => format!("putting back {}", paths[0]),
         }
     }
 
@@ -71,6 +79,7 @@ impl Job {
                 Some(name)
             }
             Job::Restore { remote, .. } => Some(remote),
+            Job::Discard { remote, .. } => remote.as_deref(),
             Job::Stage(_) => None,
         }
     }
@@ -82,8 +91,29 @@ impl Job {
             Job::Convert { name, .. } => format!("could not convert {name}"),
             Job::Restore { entry, .. } => format!("could not restore {}", entry.path),
             Job::Stage(_) => "could not stage".to_string(),
+            Job::Discard { what, paths, .. } => match what {
+                Discard::Untracked => format!("could not delete {}", leaf(&paths[0])),
+                _ => format!("could not delete the changes to {}", leaf(&paths[0])),
+            },
         }
     }
+}
+
+/// What `d` on a status row takes away, which decides what its gate says.
+#[derive(Clone)]
+pub(super) enum Discard {
+    /// The file is on no commit and not staged, so it goes from the disk.
+    Untracked,
+    /// The last commit has no file at that path, so the file itself goes.
+    Added,
+    /// It moves back to this path, every change with it.
+    Moved(String),
+    /// Every change since the last commit goes, staged or not.
+    Changed,
+}
+
+fn leaf(path: &str) -> &str {
+    path.rsplit('/').next().unwrap_or(path)
 }
 
 /// A job's end, sent back to the drawing loop.
@@ -157,6 +187,12 @@ pub(super) enum Target {
         entry: Entry,
         lost: Option<Lost>,
     },
+    /// Throw away a status row's changes, the gate in front of `Job::Discard`.
+    Discard {
+        what: Discard,
+        paths: Vec<String>,
+        remote: Option<String>,
+    },
 }
 
 /// Why the file a restore replaces exists nowhere else.
@@ -183,6 +219,7 @@ impl Target {
         match self {
             Target::Force { .. } | Target::Replace { .. } | Target::Adapt { .. } => true,
             Target::Restore { lost, .. } => lost.is_some(),
+            Target::Discard { .. } => true,
             _ => false,
         }
     }
@@ -196,6 +233,11 @@ impl Target {
             Target::Rename { name, .. } => format!("rename what {name} cannot store?"),
             Target::Convert { name, to } => format!("convert {name} to a {}?", to.name()),
             Target::Restore { .. } => "put back this version?".to_string(),
+            Target::Discard {
+                what: Discard::Untracked,
+                ..
+            } => "delete this file?".to_string(),
+            Target::Discard { .. } => "delete its changes?".to_string(),
         }
     }
 
@@ -209,13 +251,13 @@ impl Target {
             | Target::Rename { name, .. }
             | Target::Convert { name, .. } => name.clone(),
             Target::Restore { entry, lost, .. } => {
-                let base = entry.path.rsplit('/').next().unwrap_or(&entry.path);
                 if lost.is_some() {
-                    base.to_string()
+                    leaf(&entry.path).to_string()
                 } else {
                     entry.path.clone()
                 }
             }
+            Target::Discard { paths, .. } => leaf(&paths[0]).to_string(),
         }
     }
 
@@ -267,6 +309,25 @@ impl Target {
                     None => format!("the file there now is replaced by the version from {at}"),
                 }
             }
+            Target::Discard { what, paths, .. } => {
+                let path = names::display(&paths[0]);
+                let lost = match what {
+                    Discard::Untracked => {
+                        "untracked, so stowe has no copy: it goes from the disk".to_string()
+                    }
+                    Discard::Added => {
+                        "added since the last commit, so the file itself goes".to_string()
+                    }
+                    Discard::Moved(from) => format!(
+                        "every change goes and it moves back to {}",
+                        names::display(from)
+                    ),
+                    Discard::Changed => {
+                        "every change since the last commit goes, staged or not".to_string()
+                    }
+                };
+                format!("{path}\n{lost}")
+            }
         }
     }
 
@@ -274,6 +335,7 @@ impl Target {
         match self {
             Target::Force { .. } | Target::Replace { .. } => "push",
             Target::Adapt { .. } => "adapt",
+            Target::Discard { .. } => "del",
             _ => "restore",
         }
     }
@@ -431,7 +493,7 @@ impl App {
                 self.request_log();
             }
             Job::Adapt { .. } => self.reread_remotes(),
-            Job::Restore { .. } | Job::Stage(_) => {}
+            Job::Restore { .. } | Job::Stage(_) | Job::Discard { .. } => {}
         }
         if self.level == super::Level::Status || matches!(job, Job::Adapt { .. }) {
             self.request_status();
@@ -518,6 +580,18 @@ impl App {
                     remote,
                     commit,
                     entry,
+                },
+                terminal,
+            ),
+            Target::Discard {
+                what,
+                paths,
+                remote,
+            } => self.start(
+                Job::Discard {
+                    what,
+                    paths,
+                    remote,
                 },
                 terminal,
             ),
@@ -616,6 +690,21 @@ fn run(repo: &Repo, job: &Job) -> Result<String> {
                     count(staged, "file", "files"),
                     count(n, "removal", "removals")
                 ),
+            })
+        }
+        Job::Discard {
+            what,
+            paths,
+            remote,
+        } => {
+            let from = match remote {
+                Some(name) => Some((name.as_str(), reach(name)?)),
+                None => None,
+            };
+            super::status::discard(repo, paths, from)?;
+            Ok(match what {
+                Discard::Untracked => format!("deleted {}", leaf(&paths[0])),
+                _ => format!("deleted the changes to {}", leaf(&paths[0])),
             })
         }
     }

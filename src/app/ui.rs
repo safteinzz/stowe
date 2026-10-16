@@ -346,7 +346,7 @@ fn actions(app: &App) -> Vec<&'static str> {
                 keys.extend([EDIT, DEL]);
             }
         }
-        Level::Status => keys.push(CREATE),
+        Level::Status => keys.extend([CREATE, DEL]),
         _ => {}
     }
     keys.extend([FIND, REFRESH, QUIT]);
@@ -433,6 +433,8 @@ const STATUS: HelpSection = (
         ("S", "stage every row on screen"),
         ("U", "unstage every row on screen"),
         ("c", "create a commit from what is staged"),
+        ("d", "delete its changes, or the file when no commit has it"),
+        ("", "asks for its name first"),
         ("", "S staged · M not staged · ? untracked"),
         ("", "staging decodes audio, so a song keeps its history"),
     ],

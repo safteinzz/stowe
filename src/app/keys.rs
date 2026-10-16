@@ -333,7 +333,8 @@ fn status_key(
     steps: usize,
     terminal: &mut DefaultTerminal,
 ) -> bool {
-    if !ctrl && matches!(code, KeyCode::Char(' ' | 's' | 'u' | 'S' | 'U' | 'c')) && busy(app) {
+    if !ctrl && matches!(code, KeyCode::Char(' ' | 's' | 'u' | 'S' | 'U' | 'c' | 'd')) && busy(app)
+    {
         return false;
     }
     if !ctrl {
@@ -348,11 +349,12 @@ fn status_key(
             KeyCode::Char('S') => app.stage_all(),
             KeyCode::Char('U') => app.unstage_all(),
             KeyCode::Char('c') => app.create_commit(),
+            KeyCode::Char('d') => app.ask_discard(),
             _ => {}
         }
         if matches!(
             code,
-            KeyCode::Enter | KeyCode::Char(' ' | 's' | 'u' | 'S' | 'U' | 'c')
+            KeyCode::Enter | KeyCode::Char(' ' | 's' | 'u' | 'S' | 'U' | 'c' | 'd')
         ) {
             return false;
         }
