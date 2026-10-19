@@ -10,7 +10,7 @@ use std::time::UNIX_EPOCH;
 use walkdir::WalkDir;
 
 use crate::ignore::Ignore;
-use crate::model::{Entry, Manifest};
+use crate::model::{Entry, Manifest, UNTRUSTED_MTIME};
 use crate::repo::Repo;
 
 /// The progress line a TUI draws in its footer, once it has taken the terminal
@@ -85,32 +85,39 @@ pub fn hash_file(path: &std::path::Path) -> Result<String> {
 
 /// `arg` as typed, made absolute against `cwd` and resolved through symlinks,
 /// refused unless it is inside `root` (itself resolved). A path that no longer
-/// exists, as a deletion being staged, is resolved through its parent.
+/// exists, as a deletion being staged, is resolved through its nearest existing
+/// ancestor, with the rest appended and its `..` applied lexically.
 pub fn resolve_arg(
     root: &std::path::Path,
     cwd: &std::path::Path,
     arg: &std::path::Path,
 ) -> Result<std::path::PathBuf> {
+    use std::path::Component;
     let lexical = if arg.is_absolute() {
         arg.to_path_buf()
     } else {
         cwd.join(arg)
     };
-    let abs = match lexical.canonicalize() {
-        Ok(c) => c,
-        Err(_) => {
-            let parent = lexical
-                .parent()
-                .unwrap_or_else(|| std::path::Path::new("."));
-            let name = lexical
-                .file_name()
-                .ok_or_else(|| anyhow::anyhow!("bad path: {}", arg.display()))?;
-            parent
-                .canonicalize()
-                .with_context(|| format!("no such path: {}", arg.display()))?
-                .join(name)
+    let mut base = lexical.as_path();
+    let mut abs = loop {
+        match base.canonicalize() {
+            Ok(c) => break c,
+            Err(_) => {
+                base = base
+                    .parent()
+                    .with_context(|| format!("no such path: {}", arg.display()))?
+            }
         }
     };
+    for c in lexical.strip_prefix(base).unwrap_or(&lexical).components() {
+        match c {
+            Component::Normal(name) => abs.push(name),
+            Component::ParentDir => {
+                abs.pop();
+            }
+            _ => {}
+        }
+    }
     if abs.strip_prefix(root).is_err() {
         bail!("{} is outside the repo", arg.display());
     }
@@ -212,12 +219,9 @@ pub fn entry_for(
     abs: &std::path::Path,
     fingerprint: bool,
 ) -> Result<Entry> {
+    let since = crate::time::now();
     let meta = fs_err::metadata(abs)?;
-    let mtime = meta
-        .modified()?
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs() as i64)
-        .unwrap_or(0);
+    let mtime = recorded_mtime(mtime_secs(&meta)?, since);
     let fp = if fingerprint {
         crate::audio::fingerprint(abs)?
     } else {
@@ -251,6 +255,27 @@ pub fn files_under(
         }
     }
     Ok(out)
+}
+
+/// `meta`'s mtime in whole seconds.
+fn mtime_secs(meta: &std::fs::Metadata) -> Result<i64> {
+    Ok(meta
+        .modified()?
+        .duration_since(UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0))
+}
+
+/// `mtime` as an [`Entry`] records it, or [`UNTRUSTED_MTIME`] when it is not
+/// older than `since`, the second its file was stat'd in: an edit later in that
+/// second keeps the same mtime, and a same-size one would then read as
+/// unchanged.
+fn recorded_mtime(mtime: i64, since: i64) -> i64 {
+    if mtime < since {
+        mtime
+    } else {
+        UNTRUSTED_MTIME
+    }
 }
 
 /// Cached entry reused when a file's size+mtime are unchanged, so we skip both
@@ -327,11 +352,7 @@ fn collect_files(
                 continue;
             }
             let meta = entry.metadata()?;
-            let mtime = meta
-                .modified()?
-                .duration_since(UNIX_EPOCH)
-                .map(|d| d.as_secs() as i64)
-                .unwrap_or(0);
+            let mtime = mtime_secs(&meta)?;
             out.push(Found {
                 rel,
                 abs,
@@ -369,6 +390,7 @@ pub fn scan(repo: &Repo, cache_source: &Manifest, fingerprint: bool) -> Result<M
     let staged = repo.read_index()?.unwrap_or_default();
     let ignore = Ignore::load(&repo.root)
         .keeping(cache_source.iter().chain(&staged).map(|e| e.path.as_str()));
+    let since = crate::time::now();
     collect_files(&repo.root, &repo.root, &mut found, &prog, &ignore)?;
 
     // Hashing is CPU-bound and per-file independent, so fan it across cores. A
@@ -402,7 +424,7 @@ pub fn scan(repo: &Repo, cache_source: &Manifest, fingerprint: bool) -> Result<M
             Ok(Entry {
                 path: f.rel.clone(),
                 size: f.size,
-                mtime: f.mtime,
+                mtime: recorded_mtime(f.mtime, since),
                 hash,
                 fp,
             })

@@ -1,8 +1,8 @@
 //! `stowe restore`: recover committed files from a remote.
 
-use anyhow::{Context, Result, anyhow, bail};
+use anyhow::{Result, anyhow, bail};
 use std::collections::BTreeMap;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use crate::model::Entry;
 use crate::model::{count, short};
@@ -46,26 +46,7 @@ pub fn run(paths: Vec<PathBuf>, all: bool, from: Option<&str>, remote_name: &str
         let cwd = std::env::current_dir()?;
         let mut out = Vec::new();
         for arg in &paths {
-            let lexical = if arg.is_absolute() {
-                arg.clone()
-            } else {
-                cwd.join(arg)
-            };
-            // The file may be gone (we're restoring a deletion), so fall back to
-            // resolving its parent and re-appending the name.
-            let abs = match lexical.canonicalize() {
-                Ok(c) => c,
-                Err(_) => {
-                    let parent = lexical.parent().unwrap_or_else(|| Path::new("."));
-                    let name = lexical
-                        .file_name()
-                        .ok_or_else(|| anyhow!("bad path: {}", arg.display()))?;
-                    parent
-                        .canonicalize()
-                        .with_context(|| format!("no such path: {}", arg.display()))?
-                        .join(name)
-                }
-            };
+            let abs = scan::resolve_arg(&root, &cwd, arg)?;
             let rel = scan::rel_path(&root, &abs);
             let e = by_path.get(rel.as_str()).ok_or_else(|| {
                 anyhow!(

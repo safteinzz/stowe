@@ -29,7 +29,8 @@ pub struct Config {
 ///
 /// `hash` is the blake3 of the file's full content - it *is* the object's name
 /// in the store, so identical content is stored once (that's the dedup).
-/// `size` + `mtime` are only used to skip re-hashing files that look unchanged.
+/// `size` + `mtime` are only used to skip re-hashing files that look unchanged;
+/// `mtime` is whole seconds, or [`UNTRUSTED_MTIME`].
 ///
 /// `fp` is an optional *audio* fingerprint: the blake3 of the file's decoded
 /// PCM, which (unlike `hash`) is stable across tag edits. It's `None` for
@@ -45,6 +46,10 @@ pub struct Entry {
     #[serde(default)]
     pub fp: Option<String>,
 }
+
+/// The `mtime` of an entry recorded in the same second its file was last
+/// written, which no file's mtime matches, so the next scan hashes it again.
+pub const UNTRUSTED_MTIME: i64 = -1;
 
 /// A snapshot of the whole working tree, sorted by path.
 pub type Manifest = Vec<Entry>;

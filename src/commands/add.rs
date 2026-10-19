@@ -114,11 +114,20 @@ pub fn stage_paths(
             let e = scan::entry_for(root, abs, true)?;
             index.insert(rel.clone(), e);
             staged += 1;
-        } else if index.remove(rel).is_some() {
-            // Path is gone from disk → stage its deletion.
-            removed += 1;
         } else {
-            bail!("no such path, and nothing staged to remove: {typed}");
+            // Gone from disk → stage the removal of everything at or under it.
+            let gone: Vec<String> = index
+                .keys()
+                .filter(|p| under_prefix(p, rel))
+                .cloned()
+                .collect();
+            if gone.is_empty() {
+                bail!("no such path, and nothing staged to remove: {typed}");
+            }
+            for p in gone {
+                index.remove(&p);
+                removed += 1;
+            }
         }
     }
 
