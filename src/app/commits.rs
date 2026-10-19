@@ -3,6 +3,7 @@
 
 use super::jobs::{Confirm, Lost, Target};
 use super::load;
+use super::remotes::RemoteRow;
 use super::{App, Level};
 use crate::history::{self, Change, Kind};
 use crate::model::Entry;
@@ -68,16 +69,39 @@ impl App {
         at < self.pushed_from
     }
 
-    /// Where in the log the newest commit some remote has sits, which every
-    /// commit above it is unpushed against. Past the end while no remote has
-    /// one of the commits read so far.
-    pub(super) fn update_pushed(&mut self) {
-        self.pushed_from = self
+    /// Whether commit `at` is missing from some remote.
+    pub(super) fn unsynced(&self, at: usize) -> bool {
+        at < self.synced_from
+    }
+
+    /// The remotes known to hold commit `at`, and the ones not.
+    pub(super) fn holders(&self, at: usize) -> (Vec<&str>, Vec<&str>) {
+        let (has, lacks): (Vec<_>, Vec<_>) = self
             .remotes
             .iter()
-            .filter_map(|r| r.last.as_ref())
-            .filter_map(|h| self.log.iter().position(|c| &c.hash == h))
-            .min()
+            .partition(|r| self.place(r).is_some_and(|p| at >= p));
+        fn names(rs: Vec<&RemoteRow>) -> Vec<&str> {
+            rs.into_iter().map(|r| r.name.as_str()).collect()
+        }
+        (names(has), names(lacks))
+    }
+
+    /// Where in the log the commit remote `r` is known to be at sits.
+    fn place(&self, r: &RemoteRow) -> Option<usize> {
+        let h = r.last.as_ref()?;
+        self.log.iter().position(|c| &c.hash == h)
+    }
+
+    /// Where in the log the newest commit some remote has sits, and the oldest
+    /// commit every remote has, past the end while that is none of the commits
+    /// read so far.
+    pub(super) fn update_pushed(&mut self) {
+        let places: Vec<_> = self.remotes.iter().map(|r| self.place(r)).collect();
+        self.pushed_from = places.iter().flatten().min().copied().unwrap_or(usize::MAX);
+        self.synced_from = places
+            .iter()
+            .map(|p| p.unwrap_or(usize::MAX))
+            .max()
             .unwrap_or(usize::MAX);
     }
 
@@ -161,10 +185,15 @@ impl App {
 
     pub(super) fn rescope_files(&mut self) {
         let query = &self.fsel.query;
-        let visible = (0..self.files.len())
+        let mut visible: Vec<usize> = (0..self.files.len())
             .filter(|&i| query.keeps(&self.files[i].shown()))
             .collect();
+        // A push's plan keeps the mirror's drift on top.
+        if !self.files_for.starts_with("push:") {
+            visible.sort_by_key(|&i| self.files[i].kind);
+        }
         self.fsel.show(visible);
+        self.fpan = 0;
         let files = &self.files;
         self.fsel.settle_on(|i| files[i].path.clone());
     }

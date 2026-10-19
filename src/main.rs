@@ -65,10 +65,11 @@ pattern with a `/` is anchored at the root.
 Every command prints for people rather than for a pipe, but for `status -s`,
 and a failure names itself on stderr and exits non-zero; `search` finding
 nothing is one. `status -s` prints one line in a fixed form for a prompt or a
-script: +N added, -N removed, ~N changed, ⇄N moved since the last commit and
-↑N commits a remote lacks, in that order, each left out at zero.
-`repos` marks ✚N files changed since the last commit and ↑N commits a remote
-lacks, then each remote as `in sync`, `N behind` (lacks N commits), `never
+script: +N added, -N removed, ~N changed, ⇄N moved since the last commit,
+↑N commits `origin` lacks (with no `origin`, those on no remote) and ⇡N the
+most commits another remote lacks, in that order, each left out at zero.
+`repos` marks ✚N files changed since the last commit, ↑N and ⇡N as above,
+then each remote as `in sync`, `N behind` (lacks N commits), `never
 pushed` (nothing here says what it holds) or `diverged` (at a commit this repo
 lacks: `stowe pull` it, or `stowe push --force` over it).
 `search` names what a commit did to a file: added, changed, moved or removed.
@@ -111,10 +112,10 @@ enum Cmd {
     /// Create a new repo (.stowe/) in the current folder
     Init,
     /// Show what changed since the last commit
-    ///   -s                        one line for a shell prompt: +added -removed ~changed ⇄moved ↑unpushed
+    ///   -s                        one line for a shell prompt: +added -removed ~changed ⇄moved ↑origin ⇡others
     #[command(verbatim_doc_comment)]
     Status {
-        /// Print one line for a shell prompt instead: `+N -N ~N ⇄N ↑N`, zero counts left out, and an empty line when clean and pushed
+        /// Print one line for a shell prompt instead: `+N -N ~N ⇄N ↑N ⇡N`, zero counts left out, and an empty line when clean and every remote has every commit
         #[arg(short, long)]
         short: bool,
     },

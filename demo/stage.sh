@@ -130,7 +130,6 @@ up() {
 # then reorganised the way anyone reorganises one.
 mid() {
   up > /dev/null
-  mkdir -p "$DRIVE"
   in_archive init > /dev/null
   in_archive add -A > /dev/null
   in_archive commit -m "import the archive" > /dev/null
@@ -178,7 +177,6 @@ story() {
     && env -i $(env_for_stage) "$STOWE" add -A > /dev/null \
     && env -i $(env_for_stage) "$STOWE" commit -m "season one" > /dev/null \
     && env -i $(env_for_stage) "$STOWE" remote add drive "local:~/drive-podcast" > /dev/null)
-  mkdir -p "$STAGE/drive-podcast"
   (cd "$podcast" && env -i $(env_for_stage) "$STOWE" push drive > /dev/null)
   track "$podcast/Season 1/03 - Fog Signal.mp3" 392 "Fog Signal" "Low Tide Radio"
   echo "staged in $STAGE, with a history to browse and a second archive"

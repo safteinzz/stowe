@@ -43,7 +43,7 @@ pub fn run(base: &Path, depth: usize) -> Result<()> {
     Ok(())
 }
 
-/// `name  ✚3 ↑2  drive 2 behind · offsite in sync`, or `✓ clean` for nothing.
+/// `name  ✚3 ↑2 ⇡1  origin 2 behind · drive 1 behind`, or `✓ clean` for nothing.
 fn line(s: &repos::State, name_w: usize) -> String {
     let mut marks = Vec::new();
     if s.changed > 0 {
@@ -52,11 +52,14 @@ fn line(s: &repos::State, name_w: usize) -> String {
     if s.unpushed() > 0 {
         marks.push(format!("↑{}", s.unpushed()).green().to_string());
     }
+    if s.elsewhere() > 0 {
+        marks.push(format!("⇡{}", s.elsewhere()).green().to_string());
+    }
     let marks = if marks.is_empty() {
         format!("{:<8}", "✓ clean").green().to_string()
     } else {
         let width: usize = marks.len() - 1
-            + [s.changed, s.unpushed()]
+            + [s.changed, s.unpushed(), s.elsewhere()]
                 .iter()
                 .filter(|n| **n > 0)
                 .map(|n| n.to_string().len() + 1)

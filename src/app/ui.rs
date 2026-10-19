@@ -15,15 +15,15 @@ use crate::tui::highlight::render_prepared;
 use crate::tui::input::{CTRL_X_MOVE, CTRL_Y_MOVE, X_MOVE, Y_MOVE};
 use crate::tui::widgets::{
     BACK, CANCEL, CREATE, DEL, EDIT, FILTER_KEYS, FIND, HELP, HelpSection, Modal, QUIT, REFRESH,
-    SEP, confirm_popup, diff_hscrollbar, diff_scrollbar, key_footer, list_scrollbar, pane_block,
-    scope_tabs, typed_popup,
+    SEP, confirm_popup, diff_hscrollbar, diff_scrollbar, hscrollbar, key_footer, list_scrollbar,
+    pane_block, scope_tabs, typed_popup,
 };
 use crate::tui::{clamp_hscroll, clamp_scroll};
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span, Text};
-use ratatui::widgets::{List, ListItem, Paragraph};
+use ratatui::widgets::{List, ListItem, ListState, Paragraph};
 
 /// Width a repo's or a remote's name is padded to, at most.
 const NAME_W: usize = 28;
@@ -104,8 +104,7 @@ pub(super) fn draw(frame: &mut Frame, app: &mut App) {
                 format!("{} changes", short(&app.log[h.at].hash))
             });
             let t = title(&name, None, &app.fsel, false, Pane::Bottom, edit_bot);
-            let items = change_items(app, true);
-            list(frame, bottom, items, t, &mut app.fsel);
+            grouped_list(frame, bottom, app, t);
         }
         Level::Status => {
             let labels: Vec<&str> = status::SCOPES.iter().map(|s| s.label()).collect();
@@ -124,16 +123,14 @@ pub(super) fn draw(frame: &mut Frame, app: &mut App) {
         Level::Commits => {
             draw_log(frame, top, app, "commits", Pane::Top, edit_top, true);
             let t = title("changes", None, &app.fsel, false, Pane::Bottom, edit_bot);
-            let items = change_items(app, true);
-            list(frame, bottom, items, t, &mut app.fsel);
+            grouped_list(frame, bottom, app, t);
         }
         Level::Files => {
             let name = app.commit().map_or("changes".to_string(), |c| {
                 format!("{} changes", short(&c.hash))
             });
             let t = title(&name, None, &app.fsel, false, Pane::Top, edit_top);
-            let items = change_items(app, true);
-            list(frame, top, items, t, &mut app.fsel);
+            grouped_list(frame, top, app, t);
             draw_versions(frame, bottom, app, edit_bot);
         }
     }
@@ -392,7 +389,8 @@ const REPOS: HelpSection = (
     &[
         ("↵", "its history"),
         ("", "✚ files changed since the last commit"),
-        ("", "↑ commits some remote does not have yet"),
+        ("", "↑ commits origin does not have yet"),
+        ("", "⇡ the most commits another remote does not have yet"),
     ],
 );
 const REMOTES: HelpSection = (
@@ -438,6 +436,7 @@ const SCAN: HelpSection = (
         ("esc", "back to the hits, or quit before the first run"),
         ("/", "from the hits, back to the bar"),
         ("", "↵ on a hit opens its commit as ilog does"),
+        (CTRL_X_MOVE, "pan the changes below"),
     ],
 );
 const STATUS: HelpSection = (
@@ -475,7 +474,9 @@ const COMMITS: HelpSection = (
     "commits",
     &[
         ("↵", "its changes, each with its versions below"),
-        ("", "↑ on no remote yet"),
+        (CTRL_X_MOVE, "pan the changes below"),
+        ("", "↑ on no remote yet, dim when on some but not all"),
+        ("", "a remote's name marks the last commit it has"),
     ],
 );
 const FILES: HelpSection = (
@@ -485,6 +486,7 @@ const FILES: HelpSection = (
             "↵",
             "put the file back as this commit has it, from a remote",
         ),
+        (X_MOVE, "pan a long name"),
         ("", "● the version the commit above is"),
     ],
 );
@@ -672,10 +674,12 @@ fn repo_items(app: &App) -> Vec<ListItem<'static>> {
                         marks += t.chars().count();
                         spans.push(Span::styled(t, Style::default().fg(Color::Yellow)));
                     }
-                    if s.unpushed() > 0 {
-                        let t = format!("↑{} ", s.unpushed());
-                        marks += t.chars().count();
-                        spans.push(Span::styled(t, Style::default().fg(Color::Green)));
+                    for (mark, n) in [('↑', s.unpushed()), ('⇡', s.elsewhere())] {
+                        if n > 0 {
+                            let t = format!("{mark}{n} ");
+                            marks += t.chars().count();
+                            spans.push(Span::styled(t, Style::default().fg(Color::Green)));
+                        }
                     }
                     if marks == 0 {
                         marks = 8;
@@ -779,9 +783,29 @@ fn commit_items(app: &App) -> Vec<ListItem<'static>> {
                         .fg(Color::Yellow)
                         .add_modifier(Modifier::BOLD),
                 )
+            } else if app.unsynced(i) {
+                Span::styled(
+                    "↑ ",
+                    Style::default()
+                        .fg(Color::Yellow)
+                        .add_modifier(Modifier::DIM),
+                )
             } else {
                 Span::raw("  ")
             };
+            let mut at: Vec<&str> = app
+                .remotes
+                .iter()
+                .filter(|r| r.last.as_ref() == Some(&c.hash))
+                .map(|r| r.name.as_str())
+                .collect();
+            at.sort_by_key(|n| *n != "origin");
+            let names = match at.len() {
+                0 => String::new(),
+                1..=2 => format!("({})", at.join(", ")),
+                n => format!("({} +{})", at[..2].join(", "), n - 2),
+            };
+            let gap = if names.is_empty() { "" } else { " " };
             let n = |k| c.count(k);
             ListItem::new(Line::from(vec![
                 mark,
@@ -809,6 +833,8 @@ fn commit_items(app: &App) -> Vec<ListItem<'static>> {
                     format!("-{:<3} ", n(Kind::Removed)),
                     Style::default().fg(Color::Red),
                 ),
+                Span::styled(names, Style::default().fg(Color::Black).bg(Color::Cyan)),
+                Span::raw(gap),
                 Span::raw(display(&c.message)),
             ]))
         })
@@ -827,16 +853,11 @@ fn kind_style(k: Kind) -> Style {
 /// A path with the characters a move changed marked: taken away in red on the
 /// old name, added in green on the new.
 fn marked(text: &str, kept: &[bool], added: bool) -> Vec<Span<'static>> {
-    let changed = if added {
-        Style::default().fg(Color::Black).bg(Color::Green)
-    } else {
-        Style::default().fg(Color::Black).bg(Color::Red)
-    };
-    let same = if added {
-        Style::default().fg(Color::Blue)
-    } else {
-        Style::default().add_modifier(Modifier::DIM)
-    };
+    let changed = Style::default()
+        .fg(Color::Black)
+        .bg(if added { Color::Green } else { Color::Red })
+        .add_modifier(Modifier::BOLD);
+    let same = Style::default().add_modifier(Modifier::DIM);
     let mut spans: Vec<Span<'static>> = Vec::new();
     let mut run = String::new();
     let mut run_kept = None;
@@ -907,6 +928,167 @@ fn change_items(app: &App, marks: bool) -> Vec<ListItem<'static>> {
             ListItem::new(Line::from(spans))
         })
         .collect()
+}
+
+/// A commit's changes under a dim heading for each kind, which `rescope_files`
+/// has already put together, panned by `fpan` and stopped at their end.
+fn grouped_list(frame: &mut Frame, area: Rect, app: &mut App, title: Line<'static>) {
+    let width = area.width.saturating_sub(2) as usize;
+    let (items, at, head, most) = if app.fsel.is_empty() {
+        (change_items(app, true), 0, 0, 0)
+    } else {
+        let most = grouped_items(app, width, usize::MAX).3;
+        app.fpan = app.fpan.min(most);
+        let (items, at, head, _) = grouped_items(app, width, app.fpan);
+        (items, at, head, most)
+    };
+    let total = items.len();
+    let sel = &mut app.fsel;
+    let mut state = ListState::default()
+        .with_offset(sel.state.offset())
+        .with_selected((!sel.is_empty()).then_some(at));
+    // The first change of a group brings its heading into view with it.
+    if at == head + 1 && state.offset() > head {
+        *state.offset_mut() = head;
+    }
+    let widget = List::new(items)
+        .block(pane_block(title, true))
+        .highlight_style(Style::default().add_modifier(Modifier::REVERSED))
+        .highlight_symbol("› ");
+    frame.render_stateful_widget(widget, area, &mut state);
+    *sel.state.offset_mut() = state.offset();
+    list_scrollbar(frame, area, total, state.offset());
+    hscrollbar(frame, area, most + width, app.fpan, width);
+}
+
+/// The rows of [`grouped_list`] for a pane `width` columns wide inside its
+/// border, every name `pan` characters in: the row the cursor is on, the
+/// heading of its group, and the most characters a pan can move.
+fn grouped_items(
+    app: &App,
+    width: usize,
+    pan: usize,
+) -> (Vec<ListItem<'static>>, usize, usize, usize) {
+    let rows = &app.fsel.visible;
+    let dim = Style::default().add_modifier(Modifier::DIM);
+    // The cursor's `› `, a mark and ` │ ` leave the rest to the two names.
+    let half = width.saturating_sub(7) / 2;
+    let col = rows
+        .iter()
+        .filter_map(|&i| app.files[i].from.as_deref())
+        .map(columns)
+        .max()
+        .unwrap_or(0)
+        .min(half);
+    let right = width.saturating_sub(7 + col);
+    let whole = width.saturating_sub(4);
+    let (mut items, mut at, mut head, mut most) = (Vec::new(), 0, 0, 0);
+    for (n, &i) in rows.iter().enumerate() {
+        let c = &app.files[i];
+        if n == 0 || app.files[rows[n - 1]].kind != c.kind {
+            if n > 0 {
+                items.push(ListItem::new(""));
+            }
+            let count = rows[n..]
+                .iter()
+                .take_while(|&&j| app.files[j].kind == c.kind)
+                .count();
+            if n <= app.fsel.cur {
+                head = items.len();
+            }
+            items.push(ListItem::new(Span::styled(
+                format!("{} ({count})", c.kind.word()),
+                dim,
+            )));
+        }
+        if n == app.fsel.cur {
+            at = items.len();
+        }
+        if pan == usize::MAX {
+            most = most.max(match &c.from {
+                Some(from) => overflow(from, col).max(overflow(&c.path, right)),
+                None => overflow(&c.path, whole),
+            });
+            continue;
+        }
+        let mut spans = vec![Span::styled(
+            format!("{} ", c.kind.mark()),
+            kind_style(c.kind),
+        )];
+        match &c.from {
+            Some(from) => {
+                let (kept_from, kept_to) = common(from, &c.path);
+                let (from, kept_from) = skip(from, &kept_from, pan);
+                let (to, kept_to) = skip(&c.path, &kept_to, pan);
+                spans.extend(fitted(&from, kept_from, col));
+                spans.push(Span::styled(" │ ", dim));
+                spans.extend(marked(&to, kept_to, true));
+            }
+            None => spans.push(Span::styled(
+                display(&skip(&c.path, &[], pan).0),
+                kind_style(c.kind),
+            )),
+        }
+        items.push(ListItem::new(Line::from(spans)));
+    }
+    (items, at, head, most)
+}
+
+/// How many characters of `text` must scroll off its left for its end to show
+/// in `width` columns.
+fn overflow(text: &str, width: usize) -> usize {
+    let mut over = columns(text).saturating_sub(width);
+    let mut n = 0;
+    for ch in text.chars() {
+        if over == 0 {
+            break;
+        }
+        over = over.saturating_sub(columns(ch.encode_utf8(&mut [0; 4])));
+        n += 1;
+    }
+    n
+}
+
+/// `text` and its marks from character `pan` on.
+fn skip<'a>(text: &str, kept: &'a [bool], pan: usize) -> (String, &'a [bool]) {
+    (
+        text.chars().skip(pan).collect(),
+        kept.get(pan..).unwrap_or(&[]),
+    )
+}
+
+/// How many columns `text` takes on screen.
+fn columns(text: &str) -> usize {
+    Span::raw(display(text)).width()
+}
+
+/// A move's old name marked, padded or cut with `…` to exactly `width` columns.
+fn fitted(text: &str, kept: &[bool], width: usize) -> Vec<Span<'static>> {
+    let full = columns(text);
+    if width == 0 {
+        return Vec::new();
+    }
+    if full <= width {
+        let mut spans = marked(text, kept, false);
+        spans.push(Span::raw(" ".repeat(width - full)));
+        return spans;
+    }
+    let mut used = 0;
+    let mut cut = String::new();
+    for ch in text.chars() {
+        let w = columns(ch.encode_utf8(&mut [0; 4]));
+        if used + w + 1 > width {
+            break;
+        }
+        used += w;
+        cut.push(ch);
+    }
+    let mut spans = marked(&cut, kept, false);
+    spans.push(Span::styled(
+        format!("…{}", " ".repeat(width - used - 1)),
+        Style::default().add_modifier(Modifier::DIM),
+    ));
+    spans
 }
 
 fn status_items(app: &App) -> Vec<ListItem<'static>> {

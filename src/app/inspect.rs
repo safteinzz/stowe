@@ -108,14 +108,14 @@ impl App {
             row("date", format_time(c.time)),
             row("files", c.files.to_string()),
             row("changed", counts),
-            row(
-                "remote",
-                if self.unpushed(at) {
-                    "on no remote yet"
-                } else {
-                    "pushed"
-                },
-            ),
+            row("remote", {
+                let (has, lacks) = self.holders(at);
+                match (has.is_empty(), lacks.is_empty()) {
+                    (true, _) => "on no remote yet".to_string(),
+                    (false, true) => format!("on {}", has.join(", ")),
+                    (false, false) => format!("on {}, not on {}", has.join(", "), lacks.join(", ")),
+                }
+            }),
         ];
         Some((
             format!("commit {}", short(&c.hash)),

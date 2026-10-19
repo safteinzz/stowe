@@ -543,14 +543,20 @@ pub fn diff(old: &Manifest, new: &Manifest) -> Diff {
 pub fn print_status(staged: &Diff, unstaged: &Diff, summary: &Diff) {
     use colored::Colorize;
 
-    outln!("On branch {}", "main".green());
-
     let unstaged_changes =
         !unstaged.modified.is_empty() || !unstaged.removed.is_empty() || !unstaged.moved.is_empty();
     if staged.is_empty() && !unstaged_changes && unstaged.added.is_empty() {
         outln!("nothing to commit, working tree clean");
         return;
     }
+    // A blank line between sections, none above the first.
+    let mut first = true;
+    let mut heading = |text: &str| {
+        if !std::mem::take(&mut first) {
+            outln!();
+        }
+        outln!("{text}");
+    };
 
     // Colour is by *change type*, not by section: added/new is green, modified
     // yellow, deleted red, renamed blue - consistent everywhere it appears.
@@ -600,7 +606,7 @@ pub fn print_status(staged: &Diff, unstaged: &Diff, summary: &Diff) {
     // Group order: deleted → modified → renamed → new (destructive first,
     // additive last); items are already sorted alphabetically within each.
     if !staged.is_empty() {
-        outln!("\nChanges to be committed:");
+        heading("Changes to be committed:");
         for p in &staged.removed {
             line("deleted:", p, &deleted);
         }
@@ -616,7 +622,7 @@ pub fn print_status(staged: &Diff, unstaged: &Diff, summary: &Diff) {
     }
 
     if unstaged_changes {
-        outln!("\nChanges not staged for commit:");
+        heading("Changes not staged for commit:");
         outln!(
             "  {}",
             "(use \"stowe add <file>...\" to stage changes)".dimmed()
@@ -633,7 +639,7 @@ pub fn print_status(staged: &Diff, unstaged: &Diff, summary: &Diff) {
     }
 
     if !unstaged.added.is_empty() {
-        outln!("\nUntracked files:");
+        heading("Untracked files:");
         outln!(
             "  {}",
             "(use \"stowe add <file>...\" to include in commit)".dimmed()

@@ -308,6 +308,8 @@ fn remotes_key(
 fn scan_key(app: &mut App, code: KeyCode, ctrl: bool, steps: usize) -> bool {
     if ctrl && (is_down(code) || is_up(code)) {
         app.fsel.step(is_down(code), steps);
+    } else if ctrl && (is_left(code) || is_right(code)) {
+        pan_changes(app, is_right(code), steps);
     } else if is_down(code) || is_up(code) {
         if app.xsel.step(is_down(code), steps) {
             app.pending = true;
@@ -318,6 +320,16 @@ fn scan_key(app: &mut App, code: KeyCode, ctrl: bool, steps: usize) -> bool {
         return app.back();
     }
     false
+}
+
+/// Slide a commit's changes sideways, which drawing them stops at their end.
+fn pan_changes(app: &mut App, right: bool, steps: usize) {
+    let by = usize::from(PAN_STEP).saturating_mul(steps);
+    app.fpan = if right {
+        app.fpan.saturating_add(by)
+    } else {
+        app.fpan.saturating_sub(by)
+    };
 }
 
 /// Rows a ctrl-j/k moves the diff and columns a ctrl-h/l pans it, before a held
@@ -387,6 +399,8 @@ fn status_key(
 fn commits_key(app: &mut App, code: KeyCode, ctrl: bool, steps: usize) -> bool {
     if ctrl && (is_down(code) || is_up(code)) {
         app.fsel.step(is_down(code), steps);
+    } else if ctrl && (is_left(code) || is_right(code)) {
+        pan_changes(app, is_right(code), steps);
     } else if is_down(code) || is_up(code) {
         if app.csel.step(is_down(code), steps) {
             app.pending = true;
@@ -412,6 +426,8 @@ fn files_key(app: &mut App, code: KeyCode, ctrl: bool, steps: usize) -> bool {
         if app.fsel.step(is_down(code), steps) {
             app.pending = true;
         }
+    } else if !ctrl && (is_left(code) || is_right(code)) {
+        pan_changes(app, is_right(code), steps);
     } else if is_open(code) {
         app.ask_restore();
     } else if is_back(code) {

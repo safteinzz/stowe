@@ -37,7 +37,7 @@ impl Scope {
         match (self, &r.state) {
             (Scope::All, _) | (_, None) | (_, Some(Err(_))) => true,
             (Scope::Changed, Some(Ok(s))) => s.changed > 0,
-            (Scope::Unpushed, Some(Ok(s))) => s.unpushed() > 0,
+            (Scope::Unpushed, Some(Ok(s))) => s.unpushed() + s.elsewhere() > 0,
         }
     }
 }

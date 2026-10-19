@@ -277,12 +277,16 @@ pub struct App {
     prepared: RenderedDiff,
     dscroll: u16,
     dhscroll: u16,
+    /// Columns a commit's changes are panned right by.
+    fpan: usize,
     dfeed: DiffFeed,
 
     // ── commits: the repo's history, read once and shared by every level ────
     log: Vec<Logged>,
     /// Commits above this place in the log are on no remote.
     pushed_from: usize,
+    /// Commits above this place in the log are missing from some remote.
+    synced_from: usize,
     csel: Sel,
     cfeed: Feed,
     log_failed: Option<String>,
@@ -349,9 +353,11 @@ impl App {
             prepared: RenderedDiff::default(),
             dscroll: 0,
             dhscroll: 0,
+            fpan: 0,
             dfeed: DiffFeed::default(),
             log: Vec::new(),
             pushed_from: usize::MAX,
+            synced_from: usize::MAX,
             csel: Sel::default(),
             cfeed: Feed::default(),
             log_failed: None,

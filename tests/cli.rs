@@ -515,6 +515,33 @@ fn push_into_an_empty_unrecorded_folder_needs_force() {
 }
 
 #[test]
+fn status_short_counts_origin_apart_from_other_remotes() {
+    let sb = Sandbox::new();
+    sb.write("Music/a.mp3", "a");
+    sb.commit("c1");
+    sb.ok(&["remote", "add", "origin", &sb.url("origin")]);
+    sb.ok(&["remote", "add", "phone", &sb.url("phone")]);
+    sb.ok(&["push", "origin"]);
+    sb.ok(&["push", "phone"]);
+    sb.write("Music/b.mp3", "b");
+    sb.commit("c2");
+    sb.ok(&["push", "origin"]);
+    assert_eq!(
+        sb.ok(&["status", "-s"]).trim(),
+        "⇡1",
+        "origin has every commit, so only the phone's missing one counts"
+    );
+
+    sb.write("Music/c.mp3", "c");
+    sb.commit("c3");
+    assert_eq!(
+        sb.ok(&["status", "-s"]).trim(),
+        "↑1 ⇡2",
+        "↑ is what origin lacks, ⇡ the most another remote lacks"
+    );
+}
+
+#[test]
 fn a_mount_command_that_fails_stops_the_push() {
     let sb = Sandbox::new();
     sb.write("Music/a.mp3", "a");

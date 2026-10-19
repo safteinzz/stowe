@@ -7,8 +7,8 @@ use crate::model::Commit;
 use crate::repo::Repo;
 use crate::scan::{self, Diff};
 
-/// What a commit did to one path.
-#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+/// What a commit did to one path, in the order the changes pane groups them.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
 pub enum Kind {
     Added,
     Modified,

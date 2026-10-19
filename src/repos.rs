@@ -100,23 +100,47 @@ pub struct State {
 }
 
 impl State {
-    /// The most commits any remote lacks, which is what `↑` marks.
+    /// The commits `↑` marks, see [`unpushed`].
     pub fn unpushed(&self) -> usize {
         unpushed(&self.remotes, self.commits)
     }
+
+    /// The commits `⇡` marks, see [`elsewhere`].
+    pub fn elsewhere(&self) -> usize {
+        elsewhere(&self.remotes, self.commits)
+    }
 }
 
-/// The most of `commits` any of `remotes` lacks, all of them when there is no
-/// remote to push to.
+/// How many of `commits` a remote lacks: all of them when nothing says what
+/// it holds or it is at a commit this repo does not have.
+fn lacks(b: Behind, commits: usize) -> usize {
+    match b {
+        Behind::By(n) => n,
+        Behind::Never | Behind::Elsewhere => commits,
+    }
+}
+
+/// What `↑` marks: the commits `origin` lacks, which a bare `stowe push` sends,
+/// or with no `origin` the commits on no remote.
 pub fn unpushed(remotes: &[(String, Behind)], commits: usize) -> usize {
+    match remotes.iter().find(|(name, _)| name == "origin") {
+        Some((_, b)) => lacks(*b, commits),
+        None => remotes
+            .iter()
+            .map(|(_, b)| lacks(*b, commits))
+            .min()
+            .unwrap_or(commits),
+    }
+}
+
+/// What `⇡` marks: the most commits any remote but `origin` lacks.
+pub fn elsewhere(remotes: &[(String, Behind)], commits: usize) -> usize {
     remotes
         .iter()
-        .map(|(_, b)| match b {
-            Behind::By(n) => *n,
-            Behind::Never | Behind::Elsewhere => commits,
-        })
+        .filter(|(name, _)| name != "origin")
+        .map(|(_, b)| lacks(*b, commits))
         .max()
-        .unwrap_or(commits)
+        .unwrap_or(0)
 }
 
 /// Read `path`'s state. This walks its working tree, hashing only what changed
