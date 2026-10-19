@@ -17,7 +17,7 @@ use crate::commands::{adapt, convert, push, restore};
 use crate::mirror;
 use crate::model::{Entry, count};
 use crate::names;
-use crate::remote::{MountFailed, remote_url, run_mount, verify_reachable};
+use crate::remote::{MountFailed, Unseen, remote_url, run_mount, verify_reachable};
 use crate::repo::Repo;
 use crate::tui::suspended;
 use crate::tui::widgets::{Modal, Query};
@@ -172,11 +172,17 @@ pub(super) enum Target {
     Adapt { name: String, loses: Vec<String> },
     /// Push over a remote at commit `theirs`, which this repo does not have.
     Replace { name: String, theirs: String },
-    /// Rename the names a drive cannot store, then push.
+    /// Rename the names a drive cannot store, then push, with `force` kept
+    /// from the push that found them.
     Rename {
         name: String,
         offenders: Vec<String>,
+        force: bool,
     },
+    /// Push to a mirror where it deletes or replaces `loses`.
+    Push { name: String, loses: Vec<String> },
+    /// Push into an empty folder never pushed to, shown as `shown`.
+    Unseen { name: String, shown: String },
     /// Flip a remote to the other format.
     Convert { name: String, to: mirror::Format },
     /// Put a file back as a commit had it, over the one in the working tree.
@@ -231,6 +237,8 @@ impl Target {
             Target::Replace { name, .. } => format!("replace the history on {name}?"),
             Target::Adapt { name, .. } => format!("adapt from {name}?"),
             Target::Rename { name, .. } => format!("rename what {name} cannot store?"),
+            Target::Unseen { .. } => "push into an empty folder?".to_string(),
+            Target::Push { name, .. } => format!("delete or replace on {name}?"),
             Target::Convert { name, to } => format!("convert {name} to a {}?", to.name()),
             Target::Restore { .. } => "put back this version?".to_string(),
             Target::Discard {
@@ -249,6 +257,8 @@ impl Target {
             | Target::Replace { name, .. }
             | Target::Adapt { name, .. }
             | Target::Rename { name, .. }
+            | Target::Unseen { name, .. }
+            | Target::Push { name, .. }
             | Target::Convert { name, .. } => name.clone(),
             Target::Restore { entry, lost, .. } => {
                 if lost.is_some() {
@@ -284,6 +294,16 @@ impl Target {
             Target::Rename { offenders, .. } => format!(
                 "renamed here to names it can store, and recorded as a commit:\n{}",
                 listed(offenders)
+            ),
+            Target::Push { name, loses } => format!(
+                "this push deletes or replaces these on {name}, keeping the old versions in its \
+                 .stowe/objects for `stowe restore --from`:\n{}",
+                listed(loses)
+            ),
+            Target::Unseen { shown, .. } => format!(
+                "{shown} is an empty folder stowe has never pushed to\nif its drive is not \
+                 mounted there, everything lands on the disk that holds the folder: `e` gives it \
+                 a mount command"
             ),
             Target::Convert { to, .. } => match to {
                 mirror::Format::Backup => {
@@ -333,7 +353,10 @@ impl Target {
 
     pub(super) fn verb(&self) -> &'static str {
         match self {
-            Target::Force { .. } | Target::Replace { .. } => "push",
+            Target::Force { .. }
+            | Target::Replace { .. }
+            | Target::Unseen { .. }
+            | Target::Push { .. } => "push",
             Target::Adapt { .. } => "adapt",
             Target::Discard { .. } => "del",
             _ => "restore",
@@ -346,6 +369,29 @@ impl Target {
             _ => Color::Red,
         }
     }
+}
+
+/// What a push to mirror `name` deletes or replaces there, from the commit it
+/// is known to be at and HEAD. Nothing for a backup, which only ever adds, and
+/// nothing when that commit is not here, since the push stops for that itself.
+fn push_loses(repo: &Repo, name: &str) -> Result<Vec<String>> {
+    let cfg = repo.config()?;
+    let url = remote_url(repo, name)?;
+    if push::mirror_root(&cfg, name, &url)?.is_none() {
+        return Ok(Vec::new());
+    }
+    let Some(last) = repo
+        .remote_head(name)?
+        .and_then(|h| repo.read_commit(&h).ok())
+    else {
+        return Ok(Vec::new());
+    };
+    let d = crate::scan::diff(&last.files, &repo.head_manifest()?);
+    Ok(d.removed
+        .iter()
+        .map(|p| format!("deleted: {p}"))
+        .chain(d.modified.iter().map(|p| format!("replaced: {p}")))
+        .collect())
 }
 
 /// At most `LISTED` of `paths`, one a line, then how many more.
@@ -455,12 +501,18 @@ impl App {
                         name: name.clone(),
                         theirs: d.theirs.clone(),
                     }));
-                } else if let (Job::Push { name, .. }, Some(u)) =
+                } else if let (Job::Push { name, force, .. }, Some(u)) =
                     (&job, e.downcast_ref::<Unportable>())
                 {
                     self.confirm = Some(Confirm::new(Target::Rename {
                         name: name.clone(),
                         offenders: u.0.clone(),
+                        force: *force,
+                    }));
+                } else if let (Job::Push { .. }, Some(u)) = (&job, e.downcast_ref::<Unseen>()) {
+                    self.confirm = Some(Confirm::new(Target::Unseen {
+                        name: u.name.clone(),
+                        shown: u.shown.clone(),
                     }));
                 } else if let Some(c) = e.downcast_ref::<mirror::Conflicts>() {
                     self.modal = Some(Modal::new(
@@ -531,22 +583,33 @@ impl App {
     }
 
     /// `↵` on a remote.
+    /// `↵`: push, behind a gate when it deletes or replaces files on a mirror.
     pub(super) fn ask_push(&mut self, name: &str, terminal: &mut DefaultTerminal) {
-        self.start(
-            Job::Push {
+        let loses = push_loses(&Repo::at(self.repo.clone()), name).unwrap_or_default();
+        if loses.is_empty() {
+            self.start(
+                Job::Push {
+                    name: name.to_string(),
+                    force: false,
+                    rename: false,
+                },
+                terminal,
+            );
+        } else {
+            self.confirm = Some(Confirm::new(Target::Push {
                 name: name.to_string(),
-                force: false,
-                rename: false,
-            },
-            terminal,
-        );
+                loses,
+            }));
+        }
     }
 
     /// A box's yes.
     pub(super) fn confirmed(&mut self, target: Target, terminal: &mut DefaultTerminal) {
         match target {
             Target::Remove(name) => self.forget_remote(&name),
-            Target::Force { name, .. } | Target::Replace { name, .. } => self.start(
+            Target::Force { name, .. }
+            | Target::Replace { name, .. }
+            | Target::Unseen { name, .. } => self.start(
                 Job::Push {
                     name,
                     force: true,
@@ -554,10 +617,18 @@ impl App {
                 },
                 terminal,
             ),
-            Target::Rename { name, .. } => self.start(
+            Target::Push { name, .. } => self.start(
                 Job::Push {
                     name,
                     force: false,
+                    rename: false,
+                },
+                terminal,
+            ),
+            Target::Rename { name, force, .. } => self.start(
+                Job::Push {
+                    name,
+                    force,
                     rename: true,
                 },
                 terminal,
@@ -619,6 +690,9 @@ fn run(repo: &Repo, job: &Job) -> Result<String> {
                 );
             }
             let url = reach(name)?;
+            if !*force && crate::remote::unseen(repo, name, &url, cfg.mounts.contains_key(name)) {
+                return Err(Unseen::new(name, &url).into());
+            }
             let mut renamed = 0;
             if let Some(root) = push::mirror_root(&cfg, name, &url)? {
                 let found = names::unstorable(repo, &root)?;

@@ -94,6 +94,7 @@ pub fn run(name: &str) -> Result<()> {
         }
     }
     repo.set_head(&remote_head)?;
+    repo.set_remote_head(name, &remote_head)?;
     repo.clear_index()?;
 
     outln!(

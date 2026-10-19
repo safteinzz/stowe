@@ -203,9 +203,23 @@ impl Query {
         changed
     }
 
-    /// The text split at the caret, for drawing it with the caret between.
+    /// The text split at the caret.
     pub fn split(&self) -> (&str, &str) {
         self.text.split_at(char_to_byte(&self.text, self.caret))
+    }
+
+    /// The text in `style` with the caret drawn as the character under it
+    /// reversed, or a reversed space past the end, as a shell draws it. A
+    /// caret glyph between two characters reads as a space that is not there.
+    pub fn with_caret(&self, style: Style) -> Vec<Span<'static>> {
+        let (before, after) = self.split();
+        let mut rest = after.chars();
+        let under = rest.next().map_or(" ".to_string(), String::from);
+        vec![
+            Span::styled(before.to_string(), style),
+            Span::styled(under, style.add_modifier(Modifier::REVERSED)),
+            Span::styled(rest.as_str().to_string(), style),
+        ]
     }
 
     pub fn clear(&mut self) {
@@ -216,26 +230,27 @@ impl Query {
     /// The filter as its pane's title shows it, led by `key`, the key that
     /// opened it, so a query can never look like it went to the other pane. A
     /// `filterable` pane with nothing typed offers that key instead, dimmed.
-    pub fn title_span(&self, key: &str, editing: bool, filterable: bool) -> Option<Span<'static>> {
+    pub fn title_spans(&self, key: &str, editing: bool, filterable: bool) -> Vec<Span<'static>> {
         // `/fix`, but `ctrl-f fix`: a key that is a word needs the space
         let lead = match key.chars().count() {
             1 => key.to_string(),
             _ => format!("{key} "),
         };
         if editing {
-            let (before, after) = self.split();
-            Some(Span::raw(format!("   {lead}{before}▏{after}")))
+            let mut spans = vec![Span::raw(format!("   {lead}"))];
+            spans.extend(self.with_caret(Style::default()));
+            spans
         } else if !self.text.is_empty() {
-            Some(Span::raw(format!("   {lead}{}", self.text)))
+            vec![Span::raw(format!("   {lead}{}", self.text))]
         } else if filterable {
-            Some(Span::styled(
+            vec![Span::styled(
                 format!("   {key} find"),
                 Style::default()
                     .fg(Color::DarkGray)
                     .add_modifier(Modifier::DIM),
-            ))
+            )]
         } else {
-            None
+            Vec::new()
         }
     }
 }
@@ -278,7 +293,10 @@ pub fn key_footer(
     let dim = Style::default().fg(Color::DarkGray);
     let line = match (command, note, help) {
         (Some(cmd), _, _) => {
-            let mut spans = vec![Span::raw(format!(" :{}▏", cmd.text))];
+            let mut spans = vec![
+                Span::raw(format!(" :{}", cmd.text)),
+                Span::styled(" ", Style::default().add_modifier(Modifier::REVERSED)),
+            ];
             if cmd.text.is_empty() {
                 spans.push(Span::styled("help", dim.add_modifier(Modifier::DIM)));
             }
@@ -878,8 +896,7 @@ pub fn typed_popup(
     } else {
         Style::default()
     };
-    let (before, after) = typed.split();
-    lines.push(Line::from(Span::styled(format!("{before}▏{after}"), field)));
+    lines.push(Line::from(typed.with_caret(field)));
     lines.push(Line::from(""));
     let dim = Style::default()
         .fg(Color::DarkGray)
@@ -1084,11 +1101,11 @@ impl Form {
                 continue;
             }
             match (focused, f.value.text.is_empty()) {
-                (true, true) => spans.extend([Span::raw("▏"), placeholder]),
-                (true, false) => {
-                    let (before, after) = f.value.split();
-                    spans.push(Span::raw(format!("{before}▏{after}")));
-                }
+                (true, true) => spans.extend([
+                    Span::styled(" ", Style::default().add_modifier(Modifier::REVERSED)),
+                    placeholder,
+                ]),
+                (true, false) => spans.extend(f.value.with_caret(Style::default())),
                 (false, true) => spans.push(placeholder),
                 (false, false) => spans.push(Span::styled(f.value.text.clone(), dim)),
             }

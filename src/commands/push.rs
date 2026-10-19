@@ -33,6 +33,9 @@ pub fn run(remotes: &[String], force: bool) -> Result<()> {
     // first, if the remote knows how).
     for (name, url) in &resolved {
         ensure_reachable(&repo, &cfg, name, url)?;
+        if !force && remote::unseen(&repo, name, url, cfg.mounts.contains_key(name)) {
+            return Err(remote::Unseen::new(name, url).into());
+        }
     }
 
     for (name, url) in &resolved {
@@ -181,6 +184,7 @@ pub(crate) fn push_objects(
     if !force && backend.exists("refs/main")? {
         let theirs = String::from_utf8(backend.get_bytes("refs/main")?)?;
         let theirs = theirs.trim();
+        repo.set_remote_head(name, theirs)?;
         if !history.iter().any(|(h, _)| h == theirs) {
             let message = format!(
                 "remote `{name}` is at commit {}, which this repo doesn't have: `stowe pull \

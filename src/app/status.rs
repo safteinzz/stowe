@@ -243,7 +243,7 @@ impl App {
     }
 
     /// The remote to bring back the content `hash` names: `origin` when the
-    /// commit last pushed there holds it, else the first that does.
+    /// commit it is known to be at holds it, else the first that does.
     fn holding(&mut self, repo: &Repo, hash: &str) -> Option<String> {
         // istatus reads no remotes until one is needed
         self.load_remotes();

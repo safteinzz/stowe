@@ -259,6 +259,71 @@ pub(crate) fn remote_url(repo: &Repo, name: &str) -> Result<String> {
         .ok_or_else(|| anyhow!("no remote named `{name}` - add one: stowe remote add {name} <url>"))
 }
 
+/// The commit a local remote's own `refs/main` names, None when it has none.
+/// An object store is never read here, so it is left to push and pull.
+pub(crate) fn read_head(url: &str) -> Result<Option<String>> {
+    match crate::mirror::local_root(url) {
+        Some(root) => crate::mirror::local_head(&root),
+        None => Ok(None),
+    }
+}
+
+/// Make the record of where remote `name` is agree with the remote's own
+/// `refs/main` when it has one, and return the commit it is at.
+pub(crate) fn refresh_head(repo: &Repo, name: &str, url: &str) -> Result<Option<String>> {
+    let Some(theirs) = read_head(url)? else {
+        return repo.remote_head(name);
+    };
+    if repo.remote_head(name)?.as_ref() != Some(&theirs) {
+        repo.set_remote_head(name, &theirs)?;
+    }
+    Ok(Some(theirs))
+}
+
+/// Whether local remote `name` is a folder that exists and holds nothing, with
+/// no record here and no mount command. A new folder and a drive not mounted
+/// there look exactly alike, so a push into it waits to be told.
+pub(crate) fn unseen(repo: &Repo, name: &str, url: &str, mountable: bool) -> bool {
+    let Some(root) = crate::mirror::local_root(url) else {
+        return false;
+    };
+    !mountable
+        && repo.remote_head(name).ok().flatten().is_none()
+        && fs_err::read_dir(&root).is_ok_and(|mut d| d.next().is_none())
+}
+
+/// The error a push stops with when [`unseen`] holds, which only `--force`
+/// pushes past.
+#[derive(Debug)]
+pub struct Unseen {
+    pub name: String,
+    pub shown: String,
+}
+
+impl Unseen {
+    pub fn new(name: &str, url: &str) -> Unseen {
+        Unseen {
+            name: name.to_string(),
+            shown: crate::paths::short_url(url),
+        }
+    }
+}
+
+impl std::fmt::Display for Unseen {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let Unseen { name, shown } = self;
+        write!(
+            f,
+            "`{name}` ({shown}) is an empty folder stowe has never pushed to, and a drive not \
+             mounted there looks the same: if it is mounted, run `stowe push {name} --force`; \
+             if it has to be mounted first, give it a command with \
+             `stowe remote add {name} {shown} --mount <cmd>`"
+        )
+    }
+}
+
+impl std::error::Error for Unseen {}
+
 /// Whether a remote's location is usable right now. A local path is reachable
 /// if it exists, or its parent does (so a first push can still create it).
 /// Non-local remotes (s3) are assumed reachable; their backend handles it.
@@ -280,7 +345,7 @@ pub(crate) fn remote_reachable(url: &str) -> bool {
 ///    time. It's expected to be a no-op when already mounted.
 /// 2. Belt and braces: a genuinely mounted remote lives on its own filesystem.
 ///    If it's still on the local disk after mounting "succeeded", refuse.
-/// 3. With no mount command: if we've pushed here before, the remote must still
+/// 3. With no mount command: if a record says where it is, the remote must still
 ///    carry its marker. Gone means the drive is gone, and we must never
 ///    recreate the folder.
 pub(crate) fn ensure_reachable(
@@ -301,7 +366,8 @@ pub(crate) fn ensure_reachable(
 
 /// [`ensure_reachable`] for a remote whose mount command, if it has one, has
 /// already run: a TUI runs it with the terminal handed over, since it may ask
-/// for a password, and checks from a thread afterwards.
+/// for a password, and checks from a thread afterwards. The record of where a
+/// reachable remote is then follows its own ref ([`refresh_head`]).
 pub(crate) fn verify_reachable(
     repo: &Repo,
     cfg: &crate::model::Config,
@@ -342,6 +408,7 @@ pub(crate) fn verify_reachable(
             crate::paths::short(&root)
         );
     }
+    refresh_head(repo, name, url)?;
     Ok(())
 }
 

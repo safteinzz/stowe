@@ -291,9 +291,15 @@ pub struct App {
     files: Vec<Change>,
     fsel: Sel,
     pfeed: Feed,
+    /// The newest look at the remotes, so one that began before the config
+    /// changed is dropped.
+    probe_seq: u64,
     /// What `files` holds: a commit's hash, or `push:<remote>`.
     files_for: String,
     plan_failed: Option<String>,
+    /// How many of `files` lead a push's plan as what changed on the mirror
+    /// outside stowe.
+    plan_drift: usize,
 
     // ── history: one file's versions ────────────────────────────────────────
     hist: Vec<commits::Version>,
@@ -352,8 +358,10 @@ impl App {
             files: Vec::new(),
             fsel: Sel::default(),
             pfeed: Feed::default(),
+            probe_seq: 0,
             files_for: String::new(),
             plan_failed: None,
+            plan_drift: 0,
             hist: Vec::new(),
             hsel: Sel::default(),
             hist_for: (String::new(), false),
@@ -525,9 +533,14 @@ impl App {
                         self.plan_in(rows);
                     }
                 }
-                Batch::Reach { name, reach } => {
-                    if let Some(r) = self.remotes.iter_mut().find(|r| r.name == name) {
-                        r.reach = reach;
+                Batch::Reach {
+                    seq,
+                    name,
+                    reach,
+                    theirs,
+                } => {
+                    if seq == self.probe_seq {
+                        self.reach_in(&name, reach, theirs);
                     }
                 }
                 Batch::Repo { seq, path, state } => {

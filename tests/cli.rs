@@ -492,6 +492,29 @@ fn a_vanished_known_remote_is_never_silently_recreated() {
 }
 
 #[test]
+fn push_into_an_empty_unrecorded_folder_needs_force() {
+    // An unmounted drive leaves an empty mountpoint, which looks exactly like a
+    // fresh folder made for a first push.
+    let sb = Sandbox::new();
+    sb.write("Music/a.mp3", "a");
+    sb.commit("c1");
+    std::fs::create_dir_all(sb.at("mnt")).unwrap();
+    sb.ok(&["remote", "add", "drive", &sb.url("mnt")]);
+
+    sb.fails(&["push", "drive"]);
+    assert!(
+        std::fs::read_dir(sb.at("mnt")).unwrap().next().is_none(),
+        "a push without --force must write nothing into the empty folder"
+    );
+
+    sb.ok(&["push", "drive", "--force"]);
+    assert!(
+        sb.at("mnt/Music/a.mp3").is_file(),
+        "--force must push into the empty folder"
+    );
+}
+
+#[test]
 fn a_mount_command_that_fails_stops_the_push() {
     let sb = Sandbox::new();
     sb.write("Music/a.mp3", "a");

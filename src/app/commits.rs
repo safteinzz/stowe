@@ -63,7 +63,7 @@ impl App {
     }
 
     /// Whether commit `at` (its place in the log, newest first) is on no
-    /// remote: newer than what was last pushed to every one of them.
+    /// remote: newer than the commit each of them is known to be at.
     pub(super) fn unpushed(&self, at: usize) -> bool {
         at < self.pushed_from
     }
@@ -311,7 +311,7 @@ impl App {
             return;
         }
         // stowe keeps no copy here, so the committed version is only safe to
-        // replace when the commit some remote was last pushed holds it.
+        // replace when the commit some remote is known to be at holds it.
         let pushed = committed.as_ref().is_some_and(|e| {
             self.remotes
                 .iter()

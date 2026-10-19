@@ -156,7 +156,7 @@ impl Repo {
 
     // --- remote tracking --------------------------------------------------
 
-    /// Where we remember the last commit pushed to a remote (git's
+    /// Where we remember the commit a remote was last known to be at (git's
     /// `refs/remotes/<name>/main`, roughly). A name is one file name there, so
     /// one that could step out of `remotes/` is refused.
     fn remote_ref(&self, name: &str) -> Result<PathBuf> {
@@ -172,11 +172,12 @@ impl Repo {
         }
     }
 
-    /// The last commit we pushed to `name`, if we ever have.
+    /// The commit `name` was last known to be at: pushed or pulled from here, or
+    /// read off the remote's own `refs/main` when nothing here said.
     ///
     /// Its *presence* is load-bearing beyond bookkeeping: it's how push knows
-    /// it has written to this remote before, and so may not silently recreate
-    /// the remote's folder when the drive isn't mounted.
+    /// this remote holds stowe data, and so may not silently recreate the
+    /// remote's folder when the drive isn't mounted.
     pub fn remote_head(&self, name: &str) -> Result<Option<String>> {
         match fs_err::read_to_string(self.remote_ref(name)?) {
             Ok(s) => {
@@ -187,12 +188,15 @@ impl Repo {
         }
     }
 
+    /// Record `hash` as the commit `name` is at. It is written whole beside the
+    /// record and moved over it, so a failed write never leaves it empty.
     pub fn set_remote_head(&self, name: &str, hash: &str) -> Result<()> {
         let p = self.remote_ref(name)?;
-        if let Some(dir) = p.parent() {
-            fs_err::create_dir_all(dir)?;
-        }
-        fs_err::write(p, hash.as_bytes())?;
+        let dir = self.dir.join("remotes");
+        fs_err::create_dir_all(&dir)?;
+        let tmp = dir.join(format!(".{name}.tmp"));
+        fs_err::write(&tmp, hash.as_bytes())?;
+        fs_err::rename(&tmp, p)?;
         Ok(())
     }
 }

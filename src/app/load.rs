@@ -57,6 +57,9 @@ pub enum Reach {
     Checking,
     /// Its marker is there, or a folder a first push can create.
     Here,
+    /// An empty folder never pushed to, which a drive not mounted there
+    /// leaves behind too.
+    Empty,
     /// Not there, and nothing here knows how to make it so.
     Unplugged,
     /// Not there, but its mount command can bring it.
@@ -70,6 +73,7 @@ impl Reach {
         match self {
             Reach::Checking => "checking…",
             Reach::Here => "here",
+            Reach::Empty => "empty",
             Reach::Unplugged => "unplugged",
             Reach::Mountable => "mountable",
             Reach::Cloud => "cloud",
@@ -90,14 +94,18 @@ pub enum Batch {
         seq: u64,
         rows: Result<Vec<StatusRow>, String>,
     },
-    /// What pushing to a remote would do, or why that cannot be worked out.
+    /// What pushing to a remote would do, led by how many rows are what
+    /// changed on a mirror outside stowe, or why that cannot be worked out.
     Plan {
         seq: u64,
-        rows: Result<Vec<Change>, String>,
+        rows: Result<(Vec<Change>, usize), String>,
     },
+    /// Whether a remote is there, with the commit its own ref names when it is.
     Reach {
+        seq: u64,
         name: String,
         reach: Reach,
+        theirs: Option<String>,
     },
     Repo {
         seq: u64,
@@ -186,7 +194,8 @@ fn status_rows(repo: &Repo) -> anyhow::Result<Vec<StatusRow>> {
 }
 
 /// What pushing HEAD to remote `name` would do, worked out from the snapshot
-/// last pushed there and HEAD's, never from the remote itself.
+/// recorded for it and HEAD's, led by what changed on a mirror outside stowe,
+/// which a push stops for.
 pub fn stream_plan(repo: PathBuf, name: String, seq: u64, tx: Sender<Batch>) {
     thread::spawn(move || {
         let rows = plan(&Repo::at(repo), &name).map_err(|e| crate::errors::words(&e));
@@ -194,41 +203,82 @@ pub fn stream_plan(repo: PathBuf, name: String, seq: u64, tx: Sender<Batch>) {
     });
 }
 
-fn plan(repo: &Repo, name: &str) -> anyhow::Result<Vec<Change>> {
+fn plan(repo: &Repo, name: &str) -> anyhow::Result<(Vec<Change>, usize)> {
     let head = repo.head_manifest()?;
     let last = match repo.remote_head(name)? {
         None => Vec::new(),
         Some(h) => match repo.read_commit(&h) {
             Ok(c) => c.files,
             Err(_) => anyhow::bail!(
-                "`{name}` was last pushed a commit this repo does not have, so what a push \
-                 would change cannot be worked out here"
+                "`{name}` is at a commit this repo does not have, so what a push would \
+                 change cannot be worked out here"
             ),
         },
     };
-    Ok(history::changes(&scan::diff(&last, &head)))
+    let mut rows = drift_rows(repo, name)?;
+    let drifted = rows.len();
+    rows.extend(history::changes(&scan::diff(&last, &head)));
+    Ok((rows, drifted))
+}
+
+/// A mirror's drift as rows: added, deleted and edited there outside stowe.
+fn drift_rows(repo: &Repo, name: &str) -> anyhow::Result<Vec<Change>> {
+    let cfg = repo.config()?;
+    let Some(url) = cfg.remotes.get(name) else {
+        return Ok(Vec::new());
+    };
+    let Some(root) = crate::commands::push::mirror_root(&cfg, name, url)? else {
+        return Ok(Vec::new());
+    };
+    if mirror::detect_format(&root) != mirror::Format::Mirror {
+        return Ok(Vec::new());
+    }
+    let d = mirror::drift(repo, &root)?;
+    let row = |kind, path: &String| Change {
+        kind,
+        path: path.clone(),
+        from: None,
+    };
+    Ok(d.foreign
+        .iter()
+        .map(|p| row(Kind::Added, p))
+        .chain(d.missing.iter().map(|p| row(Kind::Removed, p)))
+        .chain(d.changed.iter().map(|p| row(Kind::Modified, p)))
+        .collect())
 }
 
 /// Look at every remote in `cfg`, one thread each, since a dead mount can make
-/// one look take seconds.
-pub fn probe_remotes(repo: PathBuf, cfg: &Config, tx: Sender<Batch>) {
+/// one look take seconds. Nothing is written: the screen decides what to keep.
+pub fn probe_remotes(repo: PathBuf, cfg: &Config, seq: u64, tx: Sender<Batch>) {
     for (name, url) in &cfg.remotes {
         let (name, url) = (name.clone(), url.clone());
         let mountable = cfg.mounts.contains_key(&name);
         let (repo, tx) = (repo.clone(), tx.clone());
         thread::spawn(move || {
             let reach = reach(&Repo::at(repo), &name, &url, mountable);
-            let _ = tx.send(Batch::Reach { name, reach });
+            let theirs = match reach {
+                Reach::Here => crate::remote::read_head(&url).ok().flatten(),
+                _ => None,
+            };
+            let _ = tx.send(Batch::Reach {
+                seq,
+                name,
+                reach,
+                theirs,
+            });
         });
     }
 }
 
-/// A folder being there proves nothing for a remote pushed to before, since an
+/// A folder being there proves nothing for a remote known here, since an
 /// unmounted drive leaves its mountpoint behind: only its `.stowe` marker does.
 fn reach(repo: &Repo, name: &str, url: &str, mountable: bool) -> Reach {
     let Some(root) = mirror::local_root(url) else {
         return Reach::Cloud;
     };
+    if crate::remote::unseen(repo, name, url, mountable) {
+        return Reach::Empty;
+    }
     let known = repo.remote_head(name).ok().flatten().is_some();
     let there = if known {
         mirror::detect_format(&root) != mirror::Format::Empty

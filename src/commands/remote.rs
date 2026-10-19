@@ -24,8 +24,9 @@ pub enum RemoteCmd {
         #[arg(long, value_parser = ["mirror", "backup"])]
         format: Option<String>,
         /// Shell command that makes this remote available (mount the drive,
-        /// bring up an sshfs). Run automatically when it isn't reachable. May be
-        /// an inline command or a path to a script. Local remotes only.
+        /// bring up an sshfs). Run before every use, so it must do nothing when
+        /// already mounted. May be an inline command or a path to a script.
+        /// Local remotes only.
         #[arg(long)]
         mount: Option<String>,
     },
@@ -62,6 +63,8 @@ pub fn run(cmd: Option<RemoteCmd>) -> Result<()> {
                     return Ok(());
                 }
             }
+            // Read before saving, so a ref that cannot be read leaves nothing saved.
+            let theirs = crate::remote::read_head(&url)?;
             save(&repo, &name, &url, format.as_deref(), mount.as_deref())?;
             let cfg = repo.config()?;
             outln!(
@@ -71,6 +74,16 @@ pub fn run(cmd: Option<RemoteCmd>) -> Result<()> {
             );
             if let Some(cmd) = &mount {
                 outln!("  mount: {cmd}");
+            }
+            if let Some(theirs) = theirs {
+                repo.set_remote_head(&name, &theirs)?;
+                let history = crate::repos::hashes(&repo)?;
+                let stands = if history.is_empty() {
+                    format!("`stowe pull {name}` brings it here")
+                } else {
+                    crate::repos::behind(&repo, &name, &history).words()
+                };
+                outln!("  holds commit {}: {stands}", crate::model::short(&theirs));
             }
         }
         Some(RemoteCmd::Remove { name }) => {
@@ -132,12 +145,13 @@ pub fn save(
         Some(cmd) => cfg.mounts.insert(name.to_string(), cmd.to_string()),
         None => cfg.mounts.remove(name),
     };
-    // Pushes to the old location say nothing about the new one, and the
-    // record of them would have push refuse it as a drive gone missing.
+    // A record of the old location would have push refuse the new one as a
+    // drive gone missing.
+    let place = |u: &str| mirror::local_root(u).map_or(u.into(), std::path::PathBuf::from);
     if cfg
         .remotes
         .insert(name.to_string(), url.to_string())
-        .is_some_and(|old| old != url)
+        .is_some_and(|old| place(&old) != place(url))
     {
         repo.forget_remote_head(name)?;
     }

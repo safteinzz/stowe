@@ -16,7 +16,7 @@ pub(super) struct RemoteRow {
     pub url: String,
     pub format: Format,
     pub mount: Option<String>,
-    /// The commit last pushed there from here.
+    /// The commit it was last known to be at.
     pub last: Option<String>,
     pub reach: Reach,
 }
@@ -57,11 +57,41 @@ impl App {
             r.reach = Reach::Checking;
         }
         let cfg = Repo::at(self.repo.clone()).config().unwrap_or_default();
-        load::probe_remotes(self.repo.clone(), &cfg, self.tx.clone());
+        self.probe_seq += 1;
+        load::probe_remotes(self.repo.clone(), &cfg, self.probe_seq, self.tx.clone());
         self.rescope_remotes();
         self.files_for.clear();
         if self.level == super::Level::Remotes {
             self.pending = true;
+        }
+    }
+
+    /// A look at remote `name` came back. The ref it read off the remote becomes
+    /// the record, but never while a job runs: a push records its own head as
+    /// it ends, and a ref read before that would put it back.
+    pub(super) fn reach_in(&mut self, name: &str, reach: Reach, theirs: Option<String>) {
+        let Some(r) = self.remotes.iter_mut().find(|r| r.name == name) else {
+            return;
+        };
+        r.reach = reach;
+        let Some(h) = theirs else {
+            return;
+        };
+        if self.job.is_some() || r.last.as_ref() == Some(&h) {
+            return;
+        }
+        if let Err(e) = Repo::at(self.repo.clone()).set_remote_head(name, &h) {
+            self.set_failed(format!(
+                "could not record where `{name}` is: {}",
+                crate::errors::words(&e)
+            ));
+            return;
+        }
+        r.last = Some(h);
+        self.update_pushed();
+        if self.files_for == format!("push:{name}") {
+            self.files_for.clear();
+            self.pending |= self.level == super::Level::Remotes;
         }
     }
 
@@ -108,20 +138,23 @@ impl App {
         }
         self.files_for = key;
         self.files.clear();
+        self.plan_drift = 0;
         self.fsel.show(Vec::new());
         self.plan_failed = None;
         let seq = self.pfeed.issue();
         load::stream_plan(self.repo.clone(), name, seq, self.tx.clone());
     }
 
-    pub(super) fn plan_in(&mut self, rows: Result<Vec<crate::history::Change>, String>) {
+    pub(super) fn plan_in(&mut self, rows: Result<(Vec<crate::history::Change>, usize), String>) {
         match rows {
-            Ok(rows) => {
+            Ok((rows, drifted)) => {
                 self.files = rows;
+                self.plan_drift = drifted;
                 self.plan_failed = None;
             }
             Err(e) => {
                 self.files.clear();
+                self.plan_drift = 0;
                 self.plan_failed = Some(e);
             }
         }
@@ -214,7 +247,12 @@ impl App {
         let format = cfg.formats.get(&r.name).map_or("auto", String::as_str);
         let form = Form::new(
             format!("edit {}", r.name),
-            remote_fields(&r.name, &r.url, format, r.mount.as_deref().unwrap_or("")),
+            remote_fields(
+                &r.name,
+                &crate::paths::short_url(&r.url),
+                format,
+                r.mount.as_deref().unwrap_or(""),
+            ),
         );
         self.form = Some((form, FormFor::EditRemote(r.name.clone())));
     }
@@ -273,7 +311,7 @@ fn remote_fields(name: &str, url: &str, format: &str, mount: &str) -> Vec<Field>
         pick,
         Field::new(
             "mount",
-            "a command that makes it available, such as an sshfs line",
+            "none · run before each use, such as ~/bin/mount-drive",
             false,
         )
         .with(mount),

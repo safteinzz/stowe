@@ -203,8 +203,9 @@ on every single push.
 - Linear history: one `main`, no branches.
 - Text files up to 1 MB are kept in `.stowe/` as they are staged, so `istatus`
   shows their diff without a remote. Anything else is known here only by its hash.
-- `--mount CMD` runs your own script when a remote is not reachable, so pushing
-  to an external drive or a phone over sshfs mounts it on demand.
+- `--mount CMD` runs your own script before every use of a remote, so pushing
+  to an external drive or a phone over sshfs mounts it on demand. It runs every
+  time, so it should do nothing when already mounted.
 - Replaced and deleted versions are kept in the remote's `.stowe/objects/`, so
   `stowe restore --from <commit>` can reach back for them.
 - Names that are legal locally but unstorable on exFAT or NTFS are detected

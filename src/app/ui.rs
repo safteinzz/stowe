@@ -71,7 +71,11 @@ pub(super) fn draw(frame: &mut Frame, app: &mut App) {
             let items = remote_items(app);
             list(frame, top, items, t, &mut app.msel);
             let name = match app.remote() {
-                Some(r) => format!("a push to {}{}", r.name, counts(&app.files)),
+                Some(r) => format!(
+                    "a push to {}{}",
+                    r.name,
+                    counts(&app.files[app.plan_drift.min(app.files.len())..])
+                ),
                 None => "a push".to_string(),
             };
             let t = title(
@@ -176,8 +180,9 @@ fn draw_bar(frame: &mut Frame, area: Rect, app: &App) {
         " a file name, old or new: every word must be in it   / find "
     };
     let line = if typing {
-        let (before, after) = app.bar.split();
-        Line::from(format!(" {before}▏{after}"))
+        let mut spans = vec![Span::raw(" ")];
+        spans.extend(app.bar.with_caret(Style::default()));
+        Line::from(spans)
     } else {
         Line::from(format!(" {}", app.searched))
     };
@@ -405,13 +410,24 @@ const REMOTES: HelpSection = (
         ("d", "forget one, asking first; nothing on it is touched"),
         (
             "",
-            "here · unplugged · mountable · cloud: whether it is there now",
+            "here · empty · unplugged · mountable · cloud: whether it is there now",
+        ),
+        (
+            "",
+            "empty: a folder never pushed to, which a drive not mounted there leaves too",
         ),
         (
             "",
             "a mount command runs first, in the terminal, then the screen is back",
         ),
-        ("", "below: what a push would do, from what was last pushed"),
+        (
+            "",
+            "below: what a push would do, from the commit it is known to be at",
+        ),
+        (
+            "",
+            "rows ending \"on the mirror\" changed there outside stowe, which a push stops for",
+        ),
     ],
 );
 const SCAN: HelpSection = (
@@ -585,7 +601,7 @@ fn title(
         format!("{}/{}{dots}", sel.cur + 1, sel.len())
     };
     spans.push(Span::raw(count));
-    spans.extend(sel.query.title_span(pane.sigil(), editing, filterable));
+    spans.extend(sel.query.title_spans(pane.sigil(), editing, filterable));
     spans.push(Span::raw(" "));
     Line::from(spans)
 }
@@ -721,7 +737,7 @@ fn remote_items(app: &App) -> Vec<ListItem<'static>> {
             };
             let reach_style = match r.reach {
                 Reach::Here => Style::default().fg(Color::Green),
-                Reach::Unplugged => Style::default().fg(Color::Yellow),
+                Reach::Unplugged | Reach::Empty => Style::default().fg(Color::Yellow),
                 Reach::Mountable => Style::default().fg(Color::Cyan),
                 Reach::Cloud | Reach::Checking => Style::default().add_modifier(Modifier::DIM),
             };
@@ -874,7 +890,22 @@ fn change_items(app: &App, marks: bool) -> Vec<ListItem<'static>> {
     app.fsel
         .visible
         .iter()
-        .map(|&i| ListItem::new(Line::from(change_line(&app.files[i], marks))))
+        .map(|&i| {
+            let c = &app.files[i];
+            let mut spans = change_line(c, marks);
+            if app.level == Level::Remotes && i < app.plan_drift {
+                let what = match c.kind {
+                    Kind::Added => "added",
+                    Kind::Removed => "deleted",
+                    Kind::Modified | Kind::Moved => "edited",
+                };
+                spans.push(Span::styled(
+                    format!("  {what} on the mirror"),
+                    Style::default().fg(Color::Yellow),
+                ));
+            }
+            ListItem::new(Line::from(spans))
+        })
         .collect()
 }
 

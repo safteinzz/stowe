@@ -68,7 +68,9 @@ nothing is one. `status -s` prints one line in a fixed form for a prompt or a
 script: +N added, -N removed, ~N changed, ⇄N moved since the last commit and
 ↑N commits a remote lacks, in that order, each left out at zero.
 `repos` marks ✚N files changed since the last commit and ↑N commits a remote
-lacks, then each remote as `in sync`, `N behind`, `never pushed` or `diverged`.
+lacks, then each remote as `in sync`, `N behind` (lacks N commits), `never
+pushed` (nothing here says what it holds) or `diverged` (at a commit this repo
+lacks: `stowe pull` it, or `stowe push --force` over it).
 `search` names what a commit did to a file: added, changed, moved or removed.
 Run `stowe <command> --help` for a command's details.",
     "\n\n",
@@ -132,12 +134,18 @@ enum Cmd {
         /// everything staged.
         paths: Vec<std::path::PathBuf>,
     },
-    /// Record the staged snapshot as a commit  --message <MESSAGE>
+    /// Record the staged snapshot as a commit
+    ///   -m MSG                    what it is (without it, your editor opens to write it)
+    ///   -a                        stage the entire working tree first, new files included
     #[command(verbatim_doc_comment)]
     Commit {
-        /// What this snapshot is, one line, shown by `stowe log`
+        /// What this snapshot is, shown by `stowe log`. Without it, `$VISUAL`, else
+        /// `$EDITOR`, else `vi` opens to write it, which needs a terminal
         #[arg(short = 'm', long)]
-        message: String,
+        message: Option<String>,
+        /// Stage the entire working tree first, as `stowe add -A` does, new files included
+        #[arg(short = 'a', long)]
+        all: bool,
     },
     /// Show commit history (newest first)
     Log,
@@ -156,13 +164,15 @@ enum Cmd {
         cmd: Option<RemoteCmd>,
     },
     /// Sync remote(s) to the latest commit  [REMOTES]...
-    ///   --force                   overwrite what changed there outside this repo
+    ///   --force                   push over changes made there outside this repo, or into an empty folder
     #[command(verbatim_doc_comment)]
     Push {
         /// Remotes to push to. Omit for `origin`; list several to fan out.
         remotes: Vec<String>,
         /// Overwrite what changed on the remote outside this repo: files changed
-        /// on a mirror by hand, or commits pushed there from somewhere else.
+        /// on a mirror by hand, or commits pushed there from somewhere else. Also
+        /// pushes into an empty folder never pushed to, which a drive not mounted
+        /// there leaves behind, and which a push otherwise refuses.
         #[arg(long)]
         force: bool,
     },
@@ -285,7 +295,7 @@ fn run() -> Result<()> {
         Cmd::Status { short } => commands::status::run(short),
         Cmd::Add { paths, all } => commands::add::run(paths, all),
         Cmd::Unstage { paths } => commands::unstage::run(paths),
-        Cmd::Commit { message } => commands::commit::run(&message),
+        Cmd::Commit { message, all } => commands::commit::run(message.as_deref(), all),
         Cmd::Log => commands::log::run(),
         Cmd::Remote { cmd, .. } => commands::remote::run(cmd),
         Cmd::Push { remotes, force } => commands::push::run(&remotes, force),

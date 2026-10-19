@@ -45,11 +45,11 @@ fn look(dir: &Path, depth: usize, found: &mut Vec<PathBuf>) {
 /// How far a remote is behind this repo's HEAD.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Behind {
-    /// Nothing was ever pushed there from here.
+    /// Nothing here says what it holds.
     Never,
     /// This many commits are not on it yet.
     By(usize),
-    /// It was last pushed a commit this repo no longer has.
+    /// It is at a commit this repo does not have.
     Elsewhere,
 }
 
@@ -66,7 +66,7 @@ impl Behind {
 }
 
 /// Where remote `name` stands against `history` (newest first), from the record
-/// of the last push to it.
+/// of the commit it was last known to be at.
 pub fn behind(repo: &Repo, name: &str, history: &[String]) -> Behind {
     match repo.remote_head(name).ok().flatten() {
         None => Behind::Never,

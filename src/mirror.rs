@@ -704,6 +704,26 @@ fn detect_drift(actual: &HashMap<String, u64>, recorded: &Manifest, target: &Man
     drift
 }
 
+/// What changed on the mirror at `root` outside stowe, judged as a push to
+/// HEAD judges it: paths and sizes against the snapshot its ref names.
+/// Writes nothing, so a push may still find what a look cannot.
+pub fn drift(repo: &Repo, root: &Path) -> Result<Drift> {
+    let Some(h) = read_ref(root)? else {
+        return Ok(Drift::default());
+    };
+    let recorded = read_commit_files(root, &h)?;
+    let target = repo.head_manifest()?;
+    let ignore =
+        Ignore::load(&repo.root).keeping(recorded.iter().chain(&target).map(|e| e.path.as_str()));
+    let mut actual = mirror_sizes(root, &ignore)?;
+    // `.stowe` found as `.STOWE` means the filesystem ignores case, told
+    // without the probe file a push writes.
+    if root.join(".STOWE").symlink_metadata().is_ok() {
+        adopt_spellings(&mut actual, &recorded);
+    }
+    Ok(detect_drift(&actual, &recorded, &target))
+}
+
 /// The commit the mirror at `root` reflects, if anything was pushed there.
 pub fn head(root: &Path) -> Result<Option<String>> {
     read_ref(root)
@@ -988,6 +1008,18 @@ pub fn detect_format(root: &Path) -> Format {
         Format::Backup
     } else {
         Format::Empty
+    }
+}
+
+/// The commit a local remote is at, in whichever format it is on disk.
+pub fn local_head(root: &Path) -> Result<Option<String>> {
+    match detect_format(root) {
+        Format::Mirror => read_ref(root),
+        Format::Backup => {
+            let s = fs_err::read_to_string(root.join("refs").join("main"))?;
+            Ok(Some(s.trim().to_string()).filter(|s| !s.is_empty()))
+        }
+        Format::Empty => Ok(None),
     }
 }
 

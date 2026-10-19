@@ -71,7 +71,7 @@ impl App {
             rows.push(row("mount", m.as_str()));
         }
         match &r.last {
-            None => rows.push(row("pushed", "never, from here")),
+            None => rows.push(row("at", "unknown")),
             Some(h) => {
                 let when = self
                     .log
@@ -79,7 +79,7 @@ impl App {
                     .find(|c| &c.hash == h)
                     .map(|c| format!(", {}", format_time(c.time)))
                     .unwrap_or_default();
-                rows.push(row("pushed", format!("{}{when}", short(h))));
+                rows.push(row("at", format!("{}{when}", short(h))));
             }
         }
         if let Some(b) = self.behind(r) {
