@@ -15,7 +15,13 @@ pub fn run(name: &str) -> Result<()> {
     let repo = Repo::find()?;
     let url = remote_url(&repo, name)?;
     ensure_reachable(&repo, &repo.config()?, name, &url)?;
-    let source = Source::open(&repo, name, &url)?;
+    pull(&repo, name, &url)
+}
+
+/// Bring `repo` to the commit remote `name` (at `url`) is at, which the caller
+/// has already made reachable.
+pub fn pull(repo: &Repo, name: &str, url: &str) -> Result<()> {
+    let source = Source::open(repo, name, url)?;
     let Some(remote_head) = source.head()? else {
         bail!("remote `{name}` is empty - nothing to pull");
     };
@@ -55,7 +61,7 @@ pub fn run(name: &str) -> Result<()> {
         .into_iter()
         .map(|e| (e.path, e.hash))
         .collect();
-    let working: HashMap<String, String> = scan::scan(&repo, &repo.head_manifest()?, false)?
+    let working: HashMap<String, String> = scan::scan(repo, &repo.head_manifest()?, false)?
         .into_iter()
         .map(|e| (e.path, e.hash))
         .collect();

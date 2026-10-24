@@ -111,6 +111,20 @@ struct Cli {
 enum Cmd {
     /// Create a new repo (.stowe/) in the current folder
     Init,
+    /// Copy a remote into a new folder, as a repo with it as `origin`  <URL> [PATH]
+    ///   --mount CMD               command that mounts it, run when unreachable
+    #[command(verbatim_doc_comment)]
+    Clone {
+        /// Where the remote lives: a path, `local:/path`, or `s3://bucket/prefix`
+        url: String,
+        /// The folder to make, new or empty; the last part of URL unless given
+        path: Option<std::path::PathBuf>,
+        /// Shell command that makes the remote available (mount the drive,
+        /// bring up an sshfs), saved with it as `remote add --mount` does.
+        /// Local remotes only.
+        #[arg(long)]
+        mount: Option<String>,
+    },
     /// Show what changed since the last commit
     ///   -s                        one line for a shell prompt: +added -removed ~changed ⇄moved ↑origin ⇡others
     #[command(verbatim_doc_comment)]
@@ -293,6 +307,7 @@ fn run() -> Result<()> {
     };
     match cli.cmd {
         Cmd::Init => commands::init::run(),
+        Cmd::Clone { url, path, mount } => commands::clone::run(&url, path, mount.as_deref()),
         Cmd::Status { short } => commands::status::run(short),
         Cmd::Add { paths, all } => commands::add::run(paths, all),
         Cmd::Unstage { paths } => commands::unstage::run(paths),

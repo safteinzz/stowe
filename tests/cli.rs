@@ -349,6 +349,56 @@ fn pull_rebuilds_a_library_on_a_fresh_machine() {
     );
 }
 
+#[test]
+fn a_clone_rebuilds_every_committed_file_from_a_mirror_or_a_backup() {
+    for format in ["mirror", "backup"] {
+        let sb = Sandbox::new();
+        sb.write("Music/a.mp3", "a");
+        sb.write("Photos/b.jpg", "b");
+        sb.commit("c1");
+        sb.ok(&[
+            "remote",
+            "add",
+            "origin",
+            &sb.url("drive"),
+            "--format",
+            format,
+        ]);
+        sb.ok(&["push"]);
+
+        let pc2 = sb.at("pc2");
+        sb.ok(&["clone", &sb.url("drive"), pc2.to_str().unwrap()]);
+
+        for (rel, body) in [("Music/a.mp3", "a"), ("Photos/b.jpg", "b")] {
+            assert_eq!(
+                std::fs::read_to_string(pc2.join(rel)).unwrap(),
+                body,
+                "a clone from a {format} lost {rel}"
+            );
+        }
+        let head = std::fs::read_to_string(pc2.join(".stowe/HEAD")).unwrap();
+        assert_eq!(
+            head.trim(),
+            sb.head(),
+            "a clone from a {format} is not at the commit pushed"
+        );
+    }
+}
+
+#[test]
+fn a_clone_of_an_empty_remote_leaves_no_folder_behind() {
+    let sb = Sandbox::new();
+    std::fs::create_dir_all(sb.at("drive")).unwrap();
+    let pc2 = sb.at("pc2");
+
+    sb.fails(&["clone", &sb.url("drive"), pc2.to_str().unwrap()]);
+    assert!(
+        !pc2.exists(),
+        "a failed clone left {} behind",
+        pc2.display()
+    );
+}
+
 // --- drift ------------------------------------------------------------------
 
 #[test]
@@ -667,6 +717,32 @@ fn restore_from_an_older_commit_is_a_time_machine() {
 }
 
 // --- convert ----------------------------------------------------------------
+
+#[test]
+fn a_path_under_a_removed_folder_can_be_staged_and_restored() {
+    let sb = Sandbox::new();
+    sb.write("Music/Album/a.mp3", "a");
+    sb.write("Music/Album/b.mp3", "b");
+    sb.commit("c1");
+    sb.ok(&["remote", "add", "origin", &sb.url("drive")]);
+    sb.ok(&["push"]);
+
+    std::fs::remove_dir_all(sb.repo.join("Music/Album")).unwrap();
+    sb.ok(&["restore", "Music/Album/a.mp3"]);
+    assert_eq!(
+        sb.read("Music/Album/a.mp3"),
+        "a",
+        "restore did not bring a file back into its removed folder"
+    );
+
+    std::fs::remove_dir_all(sb.repo.join("Music/Album")).unwrap();
+    sb.ok(&["add", "Music/Album"]);
+    sb.ok(&["commit", "-m", "c2"]);
+    assert!(
+        sb.ok(&["status"]).contains("nothing to commit"),
+        "staging the removed folder did not stage the removal of every file in it"
+    );
+}
 
 #[test]
 fn convert_round_trips_a_remote_between_mirror_and_backup() {

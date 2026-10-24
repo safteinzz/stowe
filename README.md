@@ -108,6 +108,7 @@ stowe search <PATTERN>       # every commit that touched a matching name
 stowe irepos [path]          # every repo under a folder; ↵ opens its history
 stowe repos [path]           # the same list, printed
 stowe unstage [paths]        # drop what is staged, files untouched
+stowe clone <URL> [path]     # a remote into a new folder, on a new machine
 stowe pull drive             # rebuild the working tree from a remote
 stowe convert drive          # flip a remote between mirror and backup in place
 stowe restore <paths>        # bring back committed files from a remote

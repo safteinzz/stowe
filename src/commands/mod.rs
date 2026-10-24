@@ -3,6 +3,7 @@
 
 pub mod adapt;
 pub mod add;
+pub mod clone;
 pub mod commit;
 pub mod convert;
 pub mod ilog;
