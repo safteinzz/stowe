@@ -233,13 +233,8 @@ pub fn sync(repo: &Repo, root: &Path, force: bool) -> Result<SyncReport> {
     // Plan = how to turn the mirror's snapshot into HEAD's.
     let d = scan::diff(&remote_manifest, target);
 
-    // New bytes come from the local working tree, indexed by content hash (so a
-    // file renamed since the commit is still found under its new name).
-    let working = scan::scan(repo, &repo.head_manifest()?, false)?;
-    let mut by_hash: HashMap<&str, &str> = HashMap::new();
-    for e in &working {
-        by_hash.entry(&e.hash).or_insert(&e.path);
-    }
+    // New bytes come from the local working tree.
+    let by_hash = scan::locate(repo, target)?;
     let target_by_path: HashMap<&str, &Entry> =
         target.iter().map(|e| (e.path.as_str(), e)).collect();
     let remote_by_path: HashMap<&str, &Entry> = remote_manifest
@@ -402,7 +397,7 @@ pub fn sync(repo: &Repo, root: &Path, force: bool) -> Result<SyncReport> {
 /// sits at `dst` looking like the real file.
 fn copy_in(
     repo: &Repo,
-    by_hash: &HashMap<&str, &str>,
+    by_hash: &HashMap<String, String>,
     target_by_path: &HashMap<&str, &Entry>,
     path: &str,
     dst: &Path,
@@ -828,14 +823,10 @@ pub fn plan_adapt(repo: &Repo, root: &Path) -> Result<AdaptPlan> {
 
     // A local path may change only while it still holds what the mirror recorded
     // there (or is already what the mirror holds now).
-    let scanned = scan::scan(repo, &repo.head_manifest()?, false)?;
-    let scanned: HashMap<&str, &str> = scanned
-        .iter()
-        .map(|e| (e.path.as_str(), e.hash.as_str()))
-        .collect();
+    let hashes = scan::Hashes::load(repo)?;
     let local = |path: &str| -> Result<Option<String>> {
-        if let Some(h) = scanned.get(path) {
-            return Ok(Some(h.to_string()));
+        if let Some(h) = hashes.at(&repo.root, path) {
+            return Ok(Some(h));
         }
         let abs = repo.root.join(path);
         match fs_err::symlink_metadata(&abs) {

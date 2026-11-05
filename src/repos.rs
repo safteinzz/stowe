@@ -77,13 +77,13 @@ pub fn behind(repo: &Repo, name: &str, history: &[String]) -> Behind {
     }
 }
 
-/// Hashes from HEAD back to the first commit, without reading any manifest
-/// twice: a commit's parent is the only field this needs.
+/// Hashes from HEAD back to the first commit, reading only each one's parent,
+/// so the cost grows with the history and not with the snapshots in it.
 pub fn hashes(repo: &Repo) -> Result<Vec<String>> {
     let mut out = Vec::new();
     let mut cur = repo.head()?;
     while let Some(h) = cur {
-        cur = repo.read_commit(&h)?.parent;
+        cur = repo.read_parent(&h)?;
         out.push(h);
     }
     Ok(out)
@@ -148,10 +148,7 @@ pub fn elsewhere(remotes: &[(String, Behind)], commits: usize) -> usize {
 pub fn state(path: &Path, base: &Path) -> Result<State> {
     let repo = Repo::at(path.to_path_buf());
     let history = hashes(&repo)?;
-    let head = repo.head_manifest()?;
-    let working = scan::scan(&repo, &head, false)?;
-    let d = scan::diff(&head, &working);
-    let changed = d.added.len() + d.removed.len() + d.modified.len() + d.moved.len();
+    let changed = scan::changes(&repo)?.total();
     let remotes = repo
         .config()?
         .remotes

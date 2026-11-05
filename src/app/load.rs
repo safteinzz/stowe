@@ -171,10 +171,10 @@ pub fn stream_status(repo: PathBuf, seq: u64, tx: Sender<Batch>) {
 
 fn status_rows(repo: &Repo) -> anyhow::Result<Vec<StatusRow>> {
     let head = repo.head_manifest()?;
-    let working = scan::scan(repo, &head, false)?;
-    let base = repo.read_index()?.unwrap_or_else(|| head.clone());
-    let staged = scan::diff(&head, &base);
-    let unstaged = scan::diff(&base, &working);
+    let index = repo.read_index()?;
+    let working = scan::working(repo, &head, index.as_ref())?;
+    let staged = scan::diff(&head, index.as_ref().unwrap_or(&head));
+    let unstaged = working.since_staged();
     let mut rows: Vec<StatusRow> = history::changes(&staged)
         .into_iter()
         .map(|change| StatusRow {

@@ -163,6 +163,24 @@ fn mirror_push_lays_out_real_playable_files() {
 }
 
 #[test]
+fn a_backslash_in_a_name_is_committed_and_pushed_as_written() {
+    let sb = Sandbox::new();
+    sb.write("Music/a\\b.mp3", "audio");
+    sb.commit("c1");
+    assert!(
+        sb.ok(&["status"]).contains("nothing to commit"),
+        "the backslash name must be committed as it is on disk"
+    );
+    sb.ok(&["remote", "add", "drive", &sb.url("drive")]);
+    sb.ok(&["push", "drive"]);
+    assert_eq!(
+        std::fs::read_to_string(sb.at("drive/Music/a\\b.mp3")).unwrap(),
+        "audio",
+        "the mirror must hold the file under the same name"
+    );
+}
+
+#[test]
 fn rename_is_applied_as_a_rename_not_a_recopy() {
     let sb = Sandbox::new();
     sb.write("Music/old.mp3", "same-bytes");

@@ -103,6 +103,7 @@ phone over sshfs mounts on demand.
 ```bash
 stowe istatus                # see a text file's diff, stage and commit in one screen
 stowe status                 # what changed since the last commit
+stowe status --prompt        # the same in one line for a shell prompt, back within 0.3s
 stowe log                    # history, newest first
 stowe search <PATTERN>       # every commit that touched a matching name
 stowe irepos [path]          # every repo under a folder; ↵ opens its history
@@ -121,13 +122,15 @@ A command that takes a remote uses `origin` when none is named,
 `stowe <command> --help` has every flag, and `?` in any screen lists every key.
 
 Every command prints for people rather than for a pipe, but for `status -s`,
-whose one line keeps a fixed form for a prompt or a script. A failure names
-itself on stderr and exits non-zero.
+whose one line keeps a fixed form for a script, and `status --prompt`, which
+prints that line or, on a disk too slow for that, the last one with ` …` after
+it. A failure names itself on stderr and exits non-zero.
 
 ## Where it keeps things
 
 ```
 .stowe/            the repo: history, what is staged, your remotes and copies of small text files
+.stowe/cache/      what scans worked out, safe to delete at any time
 .stoweignore       the paths every scan skips, gitignore-style, on remotes too
 <remote>/.stowe/   the remote's history, and every replaced or deleted version
 ```

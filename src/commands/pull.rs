@@ -61,16 +61,13 @@ pub fn pull(repo: &Repo, name: &str, url: &str) -> Result<()> {
         .into_iter()
         .map(|e| (e.path, e.hash))
         .collect();
-    let working: HashMap<String, String> = scan::scan(repo, &repo.head_manifest()?, false)?
-        .into_iter()
-        .map(|e| (e.path, e.hash))
-        .collect();
+    let hashes = scan::Hashes::load(repo)?;
     let mut wanted = Vec::new();
     let mut conflicts = Vec::new();
     for e in &files {
         let dest = repo.root.join(&e.path);
-        let current = match working.get(&e.path) {
-            Some(h) => Some(h.clone()),
+        let current = match hashes.at(&repo.root, &e.path) {
+            Some(h) => Some(h),
             None if dest.is_file() => Some(scan::hash_file(&dest)?),
             None if dest.exists() => Some(String::new()),
             None => None,

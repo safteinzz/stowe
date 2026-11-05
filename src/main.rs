@@ -64,10 +64,12 @@ pattern with a `/` is anchored at the root.
 
 Every command prints for people rather than for a pipe, but for `status -s`,
 and a failure names itself on stderr and exits non-zero; `search` finding
-nothing is one. `status -s` prints one line in a fixed form for a prompt or a
-script: +N added, -N removed, ~N changed, ⇄N moved since the last commit,
-↑N commits `origin` lacks (with no `origin`, those on no remote) and ⇡N the
-most commits another remote lacks, in that order, each left out at zero.
+nothing is one. `status -s` prints one line in a fixed form for a script:
++N added, -N removed, ~N changed, ⇄N moved since the last commit, ↑N commits
+`origin` lacks (with no `origin`, those on no remote) and ⇡N the most commits
+another remote lacks, in that order, each left out at zero. `status --prompt`
+prints it for a shell prompt within 0.3s, or else the last one worked out
+with ` …` after it, `…` alone before the first, and finishes it for the next.
 `repos` marks ✚N files changed since the last commit, ↑N and ⇡N as above,
 then each remote as `in sync`, `N behind` (lacks N commits), `never
 pushed` (nothing here says what it holds) or `diverged` (at a commit this repo
@@ -126,12 +128,19 @@ enum Cmd {
         mount: Option<String>,
     },
     /// Show what changed since the last commit
-    ///   -s                        one line for a shell prompt: +added -removed ~changed ⇄moved ↑origin ⇡others
+    ///   -s                        one line for a script: +added -removed ~changed ⇄moved ↑origin ⇡others
+    ///   --prompt                  that line for a shell prompt, back within 0.3s even on a slow disk
     #[command(verbatim_doc_comment)]
     Status {
-        /// Print one line for a shell prompt instead: `+N -N ~N ⇄N ↑N ⇡N`, zero counts left out, and an empty line when clean and every remote has every commit
+        /// Print one line for a script instead: `+N -N ~N ⇄N ↑N ⇡N`, zero counts left out, and an empty line when clean and every remote has every commit
         #[arg(short, long)]
         short: bool,
+        /// Print `-s`'s line for a shell prompt, back within 0.3s: when the scan takes longer, the last line worked out with ` …` after it (`…` alone before the first), while the scan finishes in the background for the next prompt
+        #[arg(long)]
+        prompt: bool,
+        /// The scan `--prompt` leaves running, which keeps its line for the next prompt
+        #[arg(long, hide = true)]
+        refresh: bool,
     },
     /// Stage files for the next commit  [PATHS]...
     ///   -A                        stage the entire working tree
@@ -308,7 +317,11 @@ fn run() -> Result<()> {
     match cli.cmd {
         Cmd::Init => commands::init::run(),
         Cmd::Clone { url, path, mount } => commands::clone::run(&url, path, mount.as_deref()),
-        Cmd::Status { short } => commands::status::run(short),
+        Cmd::Status {
+            short,
+            prompt,
+            refresh,
+        } => commands::status::run(short, prompt, refresh),
         Cmd::Add { paths, all } => commands::add::run(paths, all),
         Cmd::Unstage { paths } => commands::unstage::run(paths),
         Cmd::Commit { message, all } => commands::commit::run(message.as_deref(), all),

@@ -1,7 +1,7 @@
 //! `stowe push`: bring one or more remotes up to the current commit.
 
 use anyhow::{Result, anyhow, bail};
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 
 use crate::model::{count, short};
 use crate::names::preflight_names;
@@ -154,15 +154,7 @@ pub(crate) fn push_objects(
     let head = history[0].0.clone();
     let head_commit = &history[0].1;
 
-    // stowe keeps no local object store, so an object's bytes are read from the
-    // working tree. Index the tree by *content hash* rather than path, so a file
-    // renamed since the commit is still found (its content lives under the new
-    // name). Hash-only + cached, so this scan is cheap.
-    let working = scan::scan(repo, &repo.head_manifest()?, false)?;
-    let mut by_hash: HashMap<&str, &str> = HashMap::new();
-    for e in &working {
-        by_hash.entry(&e.hash).or_insert(&e.path);
-    }
+    let by_hash = scan::locate(repo, &head_commit.files)?;
 
     let mut seen = HashSet::new();
     let mut to_upload = Vec::new();

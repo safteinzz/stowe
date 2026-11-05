@@ -85,13 +85,7 @@ impl Ignore {
 
     /// The same rules, except that `tracked` paths are never ignored.
     pub fn keeping<'a>(mut self, tracked: impl IntoIterator<Item = &'a str>) -> Ignore {
-        if self.rules.is_empty() {
-            return self;
-        }
-        for path in tracked {
-            if !self.is_ignored(path, false) {
-                continue;
-            }
+        for path in self.naming(tracked) {
             let mut end = path.len();
             while !self.kept.contains(&path[..end]) {
                 self.kept.insert(path[..end].to_string());
@@ -104,6 +98,32 @@ impl Ignore {
         self
     }
 
+    /// The files in `tracked` a rule names, by name or by a folder they are in.
+    pub fn naming<'a>(&self, tracked: impl IntoIterator<Item = &'a str>) -> Vec<&'a str> {
+        let mut named = Vec::new();
+        if self.rules.is_empty() {
+            return named;
+        }
+        // A manifest lists a folder's files one after another, so whether a
+        // rule names the folder or one above it is worked out once per folder.
+        let mut folder: Option<(&str, bool)> = None;
+        for path in tracked {
+            let dir = path.rsplit_once('/').map_or("", |(dir, _)| dir);
+            let above = match folder {
+                Some((d, named)) if d == dir => named,
+                _ => {
+                    let named = !dir.is_empty() && self.rule_names(dir, true);
+                    folder = Some((dir, named));
+                    named
+                }
+            };
+            if above || self.matches(path, false) {
+                named.push(path);
+            }
+        }
+        named
+    }
+
     /// Is this repo-relative path excluded?
     ///
     /// Ancestors are checked as well as the path itself, so a file buried in an
@@ -113,6 +133,11 @@ impl Ignore {
         if self.rules.is_empty() || self.kept.contains(rel) {
             return false;
         }
+        self.rule_names(rel, is_dir)
+    }
+
+    /// Whether a rule names `rel` or a folder it is in, tracked or not.
+    fn rule_names(&self, rel: &str, is_dir: bool) -> bool {
         if self.matches(rel, is_dir) {
             return true;
         }
@@ -127,56 +152,75 @@ impl Ignore {
         false
     }
 
+    /// Whether a rule names `rel` or a folder it is in, for a walk that never
+    /// steps into a folder it leaves out, so each name meets the rules once:
+    /// `above` is that answer for the folder `rel` is in. The walk leaves `rel`
+    /// out unless it is tracked or holds a tracked path, which makes it
+    /// [`Ignore::is_ignored`] on an `Ignore` [`keeping`](Ignore::keeping) them.
+    pub fn walking(&self, rel: &str, is_dir: bool, above: bool) -> bool {
+        above || (!self.rules.is_empty() && self.matches(rel, is_dir))
+    }
+
     fn matches(&self, path: &str, is_dir: bool) -> bool {
-        self.rules.iter().any(|r| r.matches(path, is_dir))
+        let name = path.rsplit('/').next().unwrap_or(path);
+        self.rules.iter().any(|r| r.matches(path, name, is_dir))
     }
 }
 
 impl Rule {
-    fn matches(&self, path: &str, is_dir: bool) -> bool {
+    /// `name` is the last segment of `path`.
+    fn matches(&self, path: &str, name: &str, is_dir: bool) -> bool {
         if self.dir_only && !is_dir {
             return false;
         }
         if self.anchored {
-            let segs: Vec<&str> = path.split('/').collect();
-            segs.len() == self.segs.len()
-                && segs.iter().zip(&self.segs).all(|(s, p)| wildcard(p, s))
+            let mut segs = path.split('/');
+            self.segs
+                .iter()
+                .all(|p| segs.next().is_some_and(|s| wildcard(p, s)))
+                && segs.next().is_none()
         } else {
-            wildcard(&self.segs[0], path.rsplit('/').next().unwrap_or(path))
+            wildcard(&self.segs[0], name)
         }
     }
 }
 
 /// Glob match inside a single path segment: `*` is any run of characters, `?`
 /// is exactly one. Iterative with backtracking, so a pattern full of stars
-/// can't blow the stack on a long name.
+/// can't blow the stack on a long name, and it allocates nothing, since every
+/// walk asks it of every path and each of its folders.
 fn wildcard(pat: &str, text: &str) -> bool {
-    let p: Vec<char> = pat.chars().collect();
-    let t: Vec<char> = text.chars().collect();
+    if !pat.contains(['*', '?']) {
+        return pat == text;
+    }
+    let at = |s: &str, i: usize| s[i..].chars().next();
+    // Byte offsets, always on a character boundary.
     let (mut pi, mut ti) = (0usize, 0usize);
-    // Where to resume from if the current `*` turns out to have matched too
-    // little: `star` is that `*`, `mark` how much of the text it had taken.
-    let (mut star, mut mark) = (usize::MAX, 0usize);
-    while ti < t.len() {
-        if pi < p.len() && (p[pi] == '?' || p[pi] == t[ti]) {
-            pi += 1;
-            ti += 1;
-        } else if pi < p.len() && p[pi] == '*' {
-            star = pi;
-            mark = ti;
-            pi += 1;
-        } else if star != usize::MAX {
-            pi = star + 1;
-            mark += 1;
-            ti = mark;
-        } else {
-            return false;
+    // Where to resume from if the last `*` turns out to have matched too
+    // little: just past that `*`, and how much of the text it had taken.
+    let mut star: Option<(usize, usize)> = None;
+    while let Some(tc) = at(text, ti) {
+        match at(pat, pi) {
+            Some(pc) if pc == '?' || pc == tc => {
+                pi += pc.len_utf8();
+                ti += tc.len_utf8();
+            }
+            Some('*') => {
+                star = Some((pi + 1, ti));
+                pi += 1;
+            }
+            _ => match star {
+                Some((after, mark)) => {
+                    let mark = mark + at(text, mark).map_or(1, char::len_utf8);
+                    star = Some((after, mark));
+                    pi = after;
+                    ti = mark;
+                }
+                None => return false,
+            },
         }
     }
-    while pi < p.len() && p[pi] == '*' {
-        pi += 1;
-    }
-    pi == p.len()
+    pat[pi..].chars().all(|c| c == '*')
 }
 
 #[cfg(test)]

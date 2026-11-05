@@ -2,7 +2,7 @@
 name = "stowe"
 version = "0.8.1"
 edition = "2024"
-rust-version = "1.88"
+rust-version = "1.89"
 description = "where git chokes, stowe stows - versioned, deduped big and binary files, pushed to backups you can still play (mirror) or compact blob stores (S3)"
 authors = ["Pablo Antonio Hernández Hernández (safteinzz)"]
 license = "AGPL-3.0-only"
@@ -14,6 +14,10 @@ categories = ["command-line-utilities", "filesystem"]
 # URLs, never read out of the package, so shipping them would only bloat every download.
 # `demo/` is the rig that renders them: a contributor's tool, useless at install time.
 exclude = ["readme-assets/", "demo/"]
+
+# The programs stowe starts, for tools that ask what an install needs beside its libraries.
+[package.metadata]
+runs = ["git"]
 
 [dependencies]
 anyhow     = "1"                                           # error handling
