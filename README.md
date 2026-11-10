@@ -1,7 +1,5 @@
 # stowe
 
-> **Canonical:** [gitlab.com/safteinzz/stowe](https://gitlab.com/safteinzz/stowe) · **Mirror:** [github.com/safteinzz/stowe](https://github.com/safteinzz/stowe)
-
 <!-- desc:start -->
 where git chokes, stowe stows - versioned, deduped big and binary files, pushed to backups you can still play (mirror) or compact blob stores (S3)
 <!-- desc:end -->
@@ -18,7 +16,7 @@ No cargo yet? Rust installs the same way on every distro: [rustup.rs](https://ru
 
 ## The git you know, for files git chokes on
 
-![stowe remote add pointing a remote at a drive, then stowe push copying the ten files of a freshly committed archive onto it](https://gitlab.com/safteinzz/stowe/-/raw/main/readme-assets/import.png)
+![stowe remote add pointing a remote at a drive, then stowe push copying the ten files of a freshly committed archive onto it](https://raw.githubusercontent.com/safteinzz/stowe/main/readme-assets/import.png)
 
 ```bash
 stowe init                            # make this folder a repo
@@ -33,14 +31,14 @@ follows is only what works differently.
 
 ## The backup is just your files
 
-![ls of the mirror showing the Datasets, Music, Photos, Renders and Video folders beside a hidden .stowe folder, then the two songs in Music under their own names](https://gitlab.com/safteinzz/stowe/-/raw/main/readme-assets/mirror.png)
+![ls of the mirror showing the Datasets, Music, Photos, Renders and Video folders beside a hidden .stowe folder, then the two songs in Music under their own names](https://raw.githubusercontent.com/safteinzz/stowe/main/readme-assets/mirror.png)
 
 A local remote is a mirror: your real tree at real paths. Plug the drive into
 anything and play what is on it. The history sits in `.stowe/` beside it.
 
 ## Moves, not deletes and adds
 
-![stowe commit followed by stowe push drive, ending in a report reading plus 2 new, 0 changed, 6 moved, 0 removed](https://gitlab.com/safteinzz/stowe/-/raw/main/readme-assets/push.png)
+![stowe commit followed by stowe push drive, ending in a report reading plus 2 new, 0 changed, 6 moved, 0 removed](https://raw.githubusercontent.com/safteinzz/stowe/main/readme-assets/push.png)
 
 Git guesses renames from similarity. stowe knows them, because the bytes hash
 the same, so a reorganised terabyte pushes as renames on the drive and only new
@@ -48,7 +46,7 @@ files cross the wire.
 
 ## Know what each remote is missing
 
-![stowe iremote showing the drive one commit behind with the two files a push would send, pushing them, then the offsite store that was never pushed to](https://gitlab.com/safteinzz/stowe/-/raw/main/readme-assets/remote.gif)
+![stowe iremote showing the drive one commit behind with the two files a push would send, pushing them, then the offsite store that was never pushed to](https://raw.githubusercontent.com/safteinzz/stowe/main/readme-assets/remote.gif)
 
 Legend: `↑` missing commits · `here` `empty` `unplugged` `mountable` `cloud` whether it is there now
 
@@ -62,7 +60,7 @@ own place, and the plan shows without plugging either in.
 
 ## Read the history, file by file
 
-![stowe ilog opening the reorganisation, its moves marked where the names changed, then one photo's versions across the move](https://gitlab.com/safteinzz/stowe/-/raw/main/readme-assets/history.gif)
+![stowe ilog opening the reorganisation, its moves marked where the names changed, then one photo's versions across the move](https://raw.githubusercontent.com/safteinzz/stowe/main/readme-assets/history.gif)
 
 Legend: `+` new · `~` changed · `⇄` moved · `-` removed · `↑` on no remote yet, dim when on some but not all · `(drive)` the last commit a remote has
 
@@ -76,7 +74,7 @@ whatever it was called at the time.
 
 ## It will not write where it should not
 
-![a file copied onto the mirror by hand, then stowe push halting with a report that the mirror was changed outside stowe and an error telling you to reconcile or use --force, then stowe adapt taking that file into the working tree](https://gitlab.com/safteinzz/stowe/-/raw/main/readme-assets/drift.png)
+![a file copied onto the mirror by hand, then stowe push halting with a report that the mirror was changed outside stowe and an error telling you to reconcile or use --force, then stowe adapt taking that file into the working tree](https://raw.githubusercontent.com/safteinzz/stowe/main/readme-assets/drift.png)
 
 ```bash
 stowe adapt drive         # take what changed on the drive into the working tree
@@ -88,7 +86,7 @@ never wrote to, which is what an unmounted drive leaves behind.
 
 ## Two shapes of remote
 
-![two stowe remote add commands, one for a local drive and one for an s3 bucket with --format backup, then stowe remote listing the drive as mirror and the offsite bucket as backup](https://gitlab.com/safteinzz/stowe/-/raw/main/readme-assets/remote.png)
+![two stowe remote add commands, one for a local drive and one for an s3 bucket with --format backup, then stowe remote listing the drive as mirror and the offsite bucket as backup](https://raw.githubusercontent.com/safteinzz/stowe/main/readme-assets/remote.png)
 
 ```
 mirror   a local path: real folders on a drive or phone
