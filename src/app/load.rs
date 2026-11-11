@@ -1,6 +1,7 @@
 //! What the drill reads in the background: a repo's whole history as changes,
-//! its working tree against the last commit, a push's plan, whether a remote is
-//! there, and each repo's state under `irepos`. Every reader is a thread that
+//! one commit's changes in the order its pane lists them, its working tree
+//! against the last commit, a push's plan, whether a remote is there, and each
+//! repo's state under `irepos`. Every reader is a thread that
 //! sends its rows down one channel, tagged with the request they answer, so a
 //! request the cursor has moved past is dropped rather than shown.
 
@@ -9,6 +10,7 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::mpsc::Sender;
 use std::thread;
+use std::time::{Duration, Instant};
 
 use crate::history::{self, Change, Kind};
 use crate::mirror;
@@ -20,6 +22,13 @@ use crate::scan;
 /// How many commits a history read hands over at a time.
 const BATCH: usize = 32;
 
+/// How long a history read holds commits back to fill a batch, since one
+/// commit of a big tree takes this long to read by itself.
+const HELD: Duration = Duration::from_millis(50);
+
+/// How many of a commit's changes its pane takes at a time.
+pub const CHANGES: usize = 2048;
+
 /// One commit as the drill shows it, with everything it changed.
 pub struct Logged {
     pub hash: String,
@@ -27,13 +36,16 @@ pub struct Logged {
     pub message: String,
     /// Files in its snapshot.
     pub files: usize,
-    pub changes: Vec<Change>,
+    /// Shared, so the read that lists them holds them without a copy.
+    pub changes: Arc<Vec<Change>>,
+    /// How many of `changes` are of each kind, in `Kind`'s order.
+    counts: [usize; 4],
 }
 
 impl Logged {
     /// How many of its changes are of `kind`.
     pub fn count(&self, kind: Kind) -> usize {
-        self.changes.iter().filter(|c| c.kind == kind).count()
+        self.counts[kind as usize]
     }
 }
 
@@ -90,6 +102,12 @@ pub enum Batch {
         /// Why the read stopped short, on the last batch of one that did.
         failed: Option<String>,
     },
+    /// More of the changes of the commit the pane is on.
+    Changes {
+        seq: u64,
+        rows: Vec<Change>,
+        done: bool,
+    },
     Status {
         seq: u64,
         rows: Result<Vec<StatusRow>, String>,
@@ -123,19 +141,26 @@ pub fn stream_log(repo: PathBuf, seq: u64, latest: Arc<AtomicU64>, tx: Sender<Ba
         let repo = Repo::at(repo);
         let mut rows = Vec::with_capacity(BATCH);
         let mut alive = true;
+        let mut sent = Instant::now();
         let walked = history::walk(&repo, |hash, commit, changes| {
             if latest.load(Ordering::Relaxed) != seq {
                 alive = false;
                 return false;
+            }
+            let mut counts = [0; 4];
+            for c in &changes {
+                counts[c.kind as usize] += 1;
             }
             rows.push(Logged {
                 hash: hash.to_string(),
                 time: commit.time,
                 message: commit.message.clone(),
                 files: commit.files.len(),
-                changes,
+                changes: Arc::new(changes),
+                counts,
             });
-            if rows.len() >= BATCH {
+            if rows.len() >= BATCH || sent.elapsed() >= HELD {
+                sent = Instant::now();
                 let batch = std::mem::take(&mut rows);
                 alive = tx
                     .send(Batch::Log {
@@ -157,6 +182,39 @@ pub fn stream_log(repo: PathBuf, seq: u64, latest: Arc<AtomicU64>, tx: Sender<Ba
                 done: true,
                 failed: walked.err().map(|e| crate::errors::words(&e)),
             });
+        }
+    });
+}
+
+/// `changes` in the order their pane groups them: every kind in turn, each in
+/// the order the commit lists it.
+pub fn by_kind(changes: &[Change]) -> impl Iterator<Item = &Change> {
+    [Kind::Added, Kind::Modified, Kind::Moved, Kind::Removed]
+        .into_iter()
+        .flat_map(move |kind| changes.iter().filter(move |c| c.kind == kind))
+}
+
+/// Hand over `changes` as [`by_kind`] orders them, past the first `skip` the
+/// pane already holds, a batch at a time, stopping when `latest` names a
+/// newer request.
+pub fn stream_changes(
+    changes: Arc<Vec<Change>>,
+    skip: usize,
+    seq: u64,
+    latest: Arc<AtomicU64>,
+    tx: Sender<Batch>,
+) {
+    thread::spawn(move || {
+        let mut rest = by_kind(&changes).skip(skip).cloned().peekable();
+        while rest.peek().is_some() {
+            if latest.load(Ordering::Relaxed) != seq {
+                return;
+            }
+            let rows: Vec<Change> = rest.by_ref().take(CHANGES).collect();
+            let done = rest.peek().is_none();
+            if tx.send(Batch::Changes { seq, rows, done }).is_err() {
+                return;
+            }
         }
     });
 }

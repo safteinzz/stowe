@@ -34,15 +34,17 @@ pub fn unportable(path: &str, strict: bool) -> bool {
 /// Escape control characters so a bad name prints on one readable line
 /// (a raw newline in a filename would otherwise split the message in two).
 pub fn display(path: &str) -> String {
-    path.chars()
-        .map(|c| match c {
-            '\n' => "⏎".to_string(),
-            '\t' => "⇥".to_string(),
-            '\r' => "␍".to_string(),
-            c if c.is_control() => format!("\\u{{{:x}}}", c as u32),
-            c => c.to_string(),
-        })
-        .collect()
+    let mut shown = String::with_capacity(path.len());
+    for c in path.chars() {
+        match c {
+            '\n' => shown.push('⏎'),
+            '\t' => shown.push('⇥'),
+            '\r' => shown.push('␍'),
+            c if c.is_control() => shown.push_str(&format!("\\u{{{:x}}}", c as u32)),
+            c => shown.push(c),
+        }
+    }
+    shown
 }
 
 /// A safe rename target: control characters dropped; under `strict` the

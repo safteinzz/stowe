@@ -45,6 +45,10 @@ use std::time::{Duration, Instant};
 /// quick enough not to be noticed says nothing at all.
 const SLOW: Duration = Duration::from_millis(120);
 
+/// How long one frame spends taking in what the background reads produced,
+/// so rows arriving faster than that never hold a key back.
+const TAKE: Duration = Duration::from_millis(8);
+
 /// Which list the top pane is showing. The order is the drill's: Esc steps back
 /// only while the level is deeper than the one the app was entered at.
 #[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Debug)]
@@ -237,6 +241,8 @@ pub struct App {
     accel: Accel,
     tx: Sender<Batch>,
     rx: Receiver<Batch>,
+    /// `drain` ran out of time with batches still waiting.
+    backlog: bool,
     /// The job running, which the footer names.
     job: Option<jobs::Job>,
     /// A job a key asked for, started once the key is handled, since starting
@@ -294,6 +300,9 @@ pub struct App {
     // ── files: a commit's changes, or what a push would do ──────────────────
     files: Vec<Change>,
     fsel: Sel,
+    /// A commit's changes still arriving.
+    ffeed: Feed,
+    fwide: ui::Widest,
     pfeed: Feed,
     /// The newest look at the remotes, so one that began before the config
     /// changed is dropped.
@@ -330,6 +339,7 @@ impl App {
             accel: Accel::default(),
             tx,
             rx,
+            backlog: false,
             job: None,
             pending_job: None,
             progress: progress_to_screen(),
@@ -363,6 +373,8 @@ impl App {
             log_failed: None,
             files: Vec::new(),
             fsel: Sel::default(),
+            ffeed: Feed::default(),
+            fwide: ui::Widest::default(),
             pfeed: Feed::default(),
             probe_seq: 0,
             files_for: String::new(),
@@ -447,6 +459,7 @@ impl App {
             // to show them, and while a note is up, when it is due to go. With
             // neither, block on the key and leave the CPU alone.
             let wait = match (self.filling(), self.note_left()) {
+                _ if self.backlog => Some(Duration::ZERO),
                 (true, Some(left)) => Some(left.min(FRAME)),
                 (true, None) => Some(FRAME),
                 (false, left) => left,
@@ -492,6 +505,7 @@ impl App {
     fn filling(&self) -> bool {
         self.job.is_some()
             || self.cfeed.loading
+            || self.ffeed.loading
             || self.sfeed.loading
             || self.dfeed.loading()
             || self.pfeed.loading
@@ -502,11 +516,14 @@ impl App {
                 .any(|r| r.reach == load::Reach::Checking)
     }
 
-    /// Take everything the background reads have produced since the last frame.
+    /// Take what the background reads have produced since the last frame, for
+    /// at most `TAKE`, leaving the rest to the next one.
     fn drain(&mut self) {
         if let Some(prepared) = self.dfeed.take() {
             self.prepared = prepared;
         }
+        let began = Instant::now();
+        self.backlog = false;
         while let Ok(batch) = self.rx.try_recv() {
             match batch {
                 Batch::Log {
@@ -525,6 +542,11 @@ impl App {
                         self.cfeed.loading = false;
                         self.log_failed = failed;
                         self.log_done();
+                    }
+                }
+                Batch::Changes { seq, rows, done } => {
+                    if self.ffeed.accepts(seq) {
+                        self.changes_in(rows, done);
                     }
                 }
                 Batch::Status { seq, rows } => {
@@ -555,6 +577,10 @@ impl App {
                     }
                 }
                 Batch::Job(outcome) => self.finished(outcome),
+            }
+            if began.elapsed() >= TAKE {
+                self.backlog = true;
+                break;
             }
         }
     }

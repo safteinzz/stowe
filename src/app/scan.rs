@@ -62,15 +62,8 @@ impl App {
         };
         let hash = self.log[at].hash.clone();
         self.show_changes(at, &hash);
-        if let Some(cur) = self
-            .fsel
-            .visible
-            .iter()
-            .position(|&i| self.files[i].path == path)
-        {
-            self.fsel.cur = cur;
-            self.fsel.state.select(Some(cur));
-        }
+        self.fsel.restore = Some(path);
+        self.settle_files(0);
     }
 
     /// `↵` on a hit: its commit in the commits level, as `ilog` shows it.

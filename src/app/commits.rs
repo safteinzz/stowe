@@ -4,6 +4,7 @@
 use super::jobs::{Confirm, Lost, Target};
 use super::load;
 use super::remotes::RemoteRow;
+use super::ui::Widest;
 use super::{App, Level};
 use crate::history::{self, Change, Kind};
 use crate::model::Entry;
@@ -172,15 +173,71 @@ impl App {
         }
     }
 
-    /// Show commit `at`'s changes in the files list, unless it already holds them.
+    /// Show commit `at`'s changes in the files list, unless it already holds
+    /// them: as many as a screen shows at once, the rest arriving from the
+    /// background, so a commit of any size costs the same to land on.
     pub(super) fn show_changes(&mut self, at: usize, hash: &str) {
         if self.files_for == hash {
             return;
         }
-        self.files = self.log[at].changes.clone();
+        let changes = self.log[at].changes.clone();
         self.files_for = hash.to_string();
+        self.files.clear();
+        self.fsel.show(Vec::new());
         self.fsel.restore = None;
-        self.rescope_files();
+        self.fwide = Widest::default();
+        self.fpan = 0;
+        let seq = self.ffeed.issue();
+        let first: Vec<Change> = load::by_kind(&changes)
+            .take(load::CHANGES)
+            .cloned()
+            .collect();
+        let whole = first.len() == changes.len();
+        self.changes_in(first, whole);
+        if !whole {
+            load::stream_changes(
+                changes,
+                load::CHANGES,
+                seq,
+                self.ffeed.latest.clone(),
+                self.tx.clone(),
+            );
+        }
+    }
+
+    /// More of a commit's changes, in the order the pane lists them.
+    pub(super) fn changes_in(&mut self, rows: Vec<Change>, done: bool) {
+        let from = self.files.len();
+        self.files.extend(rows);
+        let query = &self.fsel.query;
+        let more: Vec<usize> = (from..self.files.len())
+            .filter(|&i| query.keeps(&self.files[i].shown()))
+            .collect();
+        for &i in &more {
+            self.fwide.add(&self.files[i]);
+        }
+        let seen = self.fsel.len();
+        self.fsel.append(more);
+        if done {
+            self.ffeed.loading = false;
+        }
+        self.settle_files(seen);
+    }
+
+    /// Put the cursor on the change `fsel.restore` names, looking from row
+    /// `seen` on, and keep looking while more are still to arrive.
+    pub(super) fn settle_files(&mut self, seen: usize) {
+        let Some(want) = &self.fsel.restore else {
+            return;
+        };
+        let found = self.fsel.visible[seen..]
+            .iter()
+            .position(|&i| &self.files[i].path == want);
+        match found {
+            Some(at) => self.fsel.restored_at(seen + at),
+            None if !self.ffeed.loading => self.fsel.restore = None,
+            None => {}
+        }
     }
 
     pub(super) fn rescope_files(&mut self) {
@@ -191,6 +248,10 @@ impl App {
         // A push's plan keeps the mirror's drift on top.
         if !self.files_for.starts_with("push:") {
             visible.sort_by_key(|&i| self.files[i].kind);
+        }
+        self.fwide = Widest::default();
+        for &i in &visible {
+            self.fwide.add(&self.files[i]);
         }
         self.fsel.show(visible);
         self.fpan = 0;
@@ -234,7 +295,7 @@ impl App {
         let moves: Vec<(String, String)> = self
             .log
             .iter()
-            .flat_map(|c| &c.changes)
+            .flat_map(|c| c.changes.iter())
             .filter_map(|c| c.from.clone().map(|f| (f, c.path.clone())))
             .collect();
         let names = history::aliases(&moves, &path);

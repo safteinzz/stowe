@@ -24,6 +24,7 @@ use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{List, ListItem, ListState, Paragraph};
+use std::ops::Range;
 
 /// Width a repo's or a remote's name is padded to, at most.
 const NAME_W: usize = 28;
@@ -103,7 +104,8 @@ pub(super) fn draw(frame: &mut Frame, app: &mut App) {
             let name = app.hit().map_or("changes".to_string(), |h| {
                 format!("{} changes", short(&app.log[h.at].hash))
             });
-            let t = title(&name, None, &app.fsel, false, Pane::Bottom, edit_bot);
+            let loading = app.ffeed.slow();
+            let t = title(&name, None, &app.fsel, loading, Pane::Bottom, edit_bot);
             grouped_list(frame, bottom, app, t);
         }
         Level::Status => {
@@ -122,14 +124,16 @@ pub(super) fn draw(frame: &mut Frame, app: &mut App) {
         }
         Level::Commits => {
             draw_log(frame, top, app, "commits", Pane::Top, edit_top, true);
-            let t = title("changes", None, &app.fsel, false, Pane::Bottom, edit_bot);
+            let loading = app.ffeed.slow();
+            let t = title("changes", None, &app.fsel, loading, Pane::Bottom, edit_bot);
             grouped_list(frame, bottom, app, t);
         }
         Level::Files => {
             let name = app.commit().map_or("changes".to_string(), |c| {
                 format!("{} changes", short(&c.hash))
             });
-            let t = title(&name, None, &app.fsel, false, Pane::Top, edit_top);
+            let loading = app.ffeed.slow();
+            let t = title(&name, None, &app.fsel, loading, Pane::Top, edit_top);
             grouped_list(frame, top, app, t);
             draw_versions(frame, bottom, app, edit_bot);
         }
@@ -771,6 +775,17 @@ fn commit_items(app: &App) -> Vec<ListItem<'static>> {
     if app.csel.is_empty() && app.cfeed.slow() {
         return vec![dim_row("loading…")];
     }
+    // Each count's column fits the biggest one listed, and two digits at least.
+    let wide = |kind| {
+        let most = app.csel.visible.iter().map(|&i| app.log[i].count(kind));
+        most.max().unwrap_or(0).to_string().len().max(2) + 1
+    };
+    let (added, modified, moved, removed) = (
+        wide(Kind::Added),
+        wide(Kind::Modified),
+        wide(Kind::Moved),
+        wide(Kind::Removed),
+    );
     app.csel
         .visible
         .iter()
@@ -818,19 +833,19 @@ fn commit_items(app: &App) -> Vec<ListItem<'static>> {
                     Style::default().fg(Color::Green),
                 ),
                 Span::styled(
-                    format!("+{:<3}", n(Kind::Added)),
+                    format!("+{:<added$}", n(Kind::Added)),
                     Style::default().fg(Color::Green),
                 ),
                 Span::styled(
-                    format!("~{:<3}", n(Kind::Modified)),
+                    format!("~{:<modified$}", n(Kind::Modified)),
                     Style::default().fg(Color::Yellow),
                 ),
                 Span::styled(
-                    format!("⇄{:<3}", n(Kind::Moved)),
+                    format!("⇄{:<moved$}", n(Kind::Moved)),
                     Style::default().fg(Color::Blue),
                 ),
                 Span::styled(
-                    format!("-{:<3} ", n(Kind::Removed)),
+                    format!("-{:<removed$} ", n(Kind::Removed)),
                     Style::default().fg(Color::Red),
                 ),
                 Span::styled(names, Style::default().fg(Color::Black).bg(Color::Cyan)),
@@ -930,130 +945,171 @@ fn change_items(app: &App, marks: bool) -> Vec<ListItem<'static>> {
         .collect()
 }
 
-/// A commit's changes under a dim heading for each kind, which `rescope_files`
-/// has already put together, panned by `fpan` and stopped at their end.
-fn grouped_list(frame: &mut Frame, area: Rect, app: &mut App, title: Line<'static>) {
-    let width = area.width.saturating_sub(2) as usize;
-    let (items, at, head, most) = if app.fsel.is_empty() {
-        (change_items(app, true), 0, 0, 0)
-    } else {
-        let most = grouped_items(app, width, usize::MAX).3;
-        app.fpan = app.fpan.min(most);
-        let (items, at, head, _) = grouped_items(app, width, app.fpan);
-        (items, at, head, most)
-    };
-    let total = items.len();
-    let sel = &mut app.fsel;
-    let mut state = ListState::default()
-        .with_offset(sel.state.offset())
-        .with_selected((!sel.is_empty()).then_some(at));
-    // The first change of a group brings its heading into view with it.
-    if at == head + 1 && state.offset() > head {
-        *state.offset_mut() = head;
+/// How wide the names in a commit's changes run, kept as the changes arrive
+/// so a frame measures only the rows it draws.
+#[derive(Default)]
+pub(super) struct Widest {
+    /// The longest old name of a move.
+    from: usize,
+    /// The longest new name of a move.
+    to: usize,
+    /// The longest path of any other change.
+    path: usize,
+}
+
+impl Widest {
+    pub(super) fn add(&mut self, c: &Change) {
+        match &c.from {
+            Some(from) => {
+                self.from = self.from.max(columns(from));
+                self.to = self.to.max(columns(&c.path));
+            }
+            None => self.path = self.path.max(columns(&c.path)),
+        }
     }
+}
+
+/// One kind's changes in [`grouped_list`]: the row its heading is drawn on,
+/// and which of `fsel.visible` follow it.
+struct Group {
+    kind: Kind,
+    head: usize,
+    rows: Range<usize>,
+}
+
+/// The groups `fsel.visible` falls into, which holds each kind's changes
+/// together, with a blank row between one group and the next.
+fn groups(app: &App) -> Vec<Group> {
+    let rows = &app.fsel.visible;
+    let mut found: Vec<Group> = Vec::new();
+    let (mut start, mut head) = (0, 0);
+    while start < rows.len() {
+        let kind = app.files[rows[start]].kind;
+        let len = rows[start..].partition_point(|&i| app.files[i].kind == kind);
+        let end = start + len.max(1);
+        found.push(Group {
+            kind,
+            head,
+            rows: start..end,
+        });
+        head += end - start + 2;
+        start = end;
+    }
+    found
+}
+
+/// A commit's changes under a dim heading for each kind, panned by `fpan` and
+/// stopped at their end. Only the rows on screen are built, so a commit's
+/// size never reaches a frame.
+fn grouped_list(frame: &mut Frame, area: Rect, app: &mut App, title: Line<'static>) {
+    let block = pane_block(title, true);
+    if app.fsel.is_empty() {
+        let rows = match app.ffeed.slow() {
+            true => vec![dim_row("loading…")],
+            false => Vec::new(),
+        };
+        frame.render_widget(List::new(rows).block(block), area);
+        return;
+    }
+    let width = area.width.saturating_sub(2) as usize;
+    let view = area.height.saturating_sub(2) as usize;
+    // The cursor's `› `, a mark and ` │ ` leave the rest to the two names.
+    let half = width.saturating_sub(7) / 2;
+    let col = app.fwide.from.min(half);
+    let right = width.saturating_sub(7 + col);
+    let whole = width.saturating_sub(4);
+    let most = (app.fwide.from.saturating_sub(col))
+        .max(app.fwide.to.saturating_sub(right))
+        .max(app.fwide.path.saturating_sub(whole));
+    app.fpan = app.fpan.min(most);
+
+    let groups = groups(app);
+    let total = groups.last().map_or(0, |g| g.head + 1 + g.rows.len());
+    let cur = app.fsel.cur;
+    let (at, head) = groups
+        .iter()
+        .find(|g| g.rows.contains(&cur))
+        .map_or((0, 0), |g| (g.head + 1 + cur - g.rows.start, g.head));
+    let mut offset = app.fsel.state.offset().min(total.saturating_sub(1));
+    if at < offset {
+        offset = at;
+    } else if at >= offset + view {
+        offset = (at + 1).saturating_sub(view);
+    }
+    // The first change of a group brings its heading into view with it.
+    if at == head + 1 && offset > head && view > 1 {
+        offset = head;
+    }
+
+    let dim = Style::default().add_modifier(Modifier::DIM);
+    let items: Vec<ListItem<'static>> = (offset..total.min(offset + view))
+        .map(|row| {
+            let Some(g) = groups.iter().rev().find(|g| g.head <= row) else {
+                return ListItem::new("");
+            };
+            if row == g.head {
+                let heading = format!("{} ({})", g.kind.word(), g.rows.len());
+                return ListItem::new(Span::styled(heading, dim));
+            }
+            match app.fsel.visible.get(g.rows.start + row - g.head - 1) {
+                Some(&i) if row <= g.head + g.rows.len() => {
+                    ListItem::new(Line::from(grouped_row(&app.files[i], app.fpan, col)))
+                }
+                _ => ListItem::new(""),
+            }
+        })
+        .collect();
+    let mut state = ListState::default().with_selected(Some(at - offset));
     let widget = List::new(items)
-        .block(pane_block(title, true))
+        .block(block)
         .highlight_style(Style::default().add_modifier(Modifier::REVERSED))
         .highlight_symbol("› ");
     frame.render_stateful_widget(widget, area, &mut state);
-    *sel.state.offset_mut() = state.offset();
-    list_scrollbar(frame, area, total, state.offset());
+    *app.fsel.state.offset_mut() = offset;
+    list_scrollbar(frame, area, total, offset);
     hscrollbar(frame, area, most + width, app.fpan, width);
 }
 
-/// The rows of [`grouped_list`] for a pane `width` columns wide inside its
-/// border, every name `pan` characters in: the row the cursor is on, the
-/// heading of its group, and the most characters a pan can move.
-fn grouped_items(
-    app: &App,
-    width: usize,
-    pan: usize,
-) -> (Vec<ListItem<'static>>, usize, usize, usize) {
-    let rows = &app.fsel.visible;
-    let dim = Style::default().add_modifier(Modifier::DIM);
-    // The cursor's `› `, a mark and ` │ ` leave the rest to the two names.
-    let half = width.saturating_sub(7) / 2;
-    let col = rows
-        .iter()
-        .filter_map(|&i| app.files[i].from.as_deref())
-        .map(columns)
-        .max()
-        .unwrap_or(0)
-        .min(half);
-    let right = width.saturating_sub(7 + col);
-    let whole = width.saturating_sub(4);
-    let (mut items, mut at, mut head, mut most) = (Vec::new(), 0, 0, 0);
-    for (n, &i) in rows.iter().enumerate() {
-        let c = &app.files[i];
-        if n == 0 || app.files[rows[n - 1]].kind != c.kind {
-            if n > 0 {
-                items.push(ListItem::new(""));
-            }
-            let count = rows[n..]
-                .iter()
-                .take_while(|&&j| app.files[j].kind == c.kind)
-                .count();
-            if n <= app.fsel.cur {
-                head = items.len();
-            }
-            items.push(ListItem::new(Span::styled(
-                format!("{} ({count})", c.kind.word()),
-                dim,
-            )));
+/// One change of [`grouped_list`], its names `pan` columns in: a move's old
+/// name in `col` columns, then its new one.
+fn grouped_row(c: &Change, pan: usize, col: usize) -> Vec<Span<'static>> {
+    let mut spans = vec![Span::styled(
+        format!("{} ", c.kind.mark()),
+        kind_style(c.kind),
+    )];
+    match &c.from {
+        Some(from) => {
+            let (kept_from, kept_to) = common(from, &c.path);
+            let (from, kept_from) = skip(from, &kept_from, pan);
+            let (to, kept_to) = skip(&c.path, &kept_to, pan);
+            spans.extend(fitted(&from, kept_from, col));
+            spans.push(Span::styled(
+                " │ ",
+                Style::default().add_modifier(Modifier::DIM),
+            ));
+            spans.extend(marked(&to, kept_to, true));
         }
-        if n == app.fsel.cur {
-            at = items.len();
-        }
-        if pan == usize::MAX {
-            most = most.max(match &c.from {
-                Some(from) => overflow(from, col).max(overflow(&c.path, right)),
-                None => overflow(&c.path, whole),
-            });
-            continue;
-        }
-        let mut spans = vec![Span::styled(
-            format!("{} ", c.kind.mark()),
+        None => spans.push(Span::styled(
+            display(&skip(&c.path, &[], pan).0),
             kind_style(c.kind),
-        )];
-        match &c.from {
-            Some(from) => {
-                let (kept_from, kept_to) = common(from, &c.path);
-                let (from, kept_from) = skip(from, &kept_from, pan);
-                let (to, kept_to) = skip(&c.path, &kept_to, pan);
-                spans.extend(fitted(&from, kept_from, col));
-                spans.push(Span::styled(" │ ", dim));
-                spans.extend(marked(&to, kept_to, true));
-            }
-            None => spans.push(Span::styled(
-                display(&skip(&c.path, &[], pan).0),
-                kind_style(c.kind),
-            )),
-        }
-        items.push(ListItem::new(Line::from(spans)));
+        )),
     }
-    (items, at, head, most)
+    spans
 }
 
-/// How many characters of `text` must scroll off its left for its end to show
-/// in `width` columns.
-fn overflow(text: &str, width: usize) -> usize {
-    let mut over = columns(text).saturating_sub(width);
-    let mut n = 0;
+/// `text` and its marks with `pan` columns scrolled off its left.
+fn skip<'a>(text: &str, kept: &'a [bool], pan: usize) -> (String, &'a [bool]) {
+    let (mut gone, mut chars) = (0, 0);
     for ch in text.chars() {
-        if over == 0 {
+        if gone >= pan {
             break;
         }
-        over = over.saturating_sub(columns(ch.encode_utf8(&mut [0; 4])));
-        n += 1;
+        gone += columns(ch.encode_utf8(&mut [0; 4]));
+        chars += 1;
     }
-    n
-}
-
-/// `text` and its marks from character `pan` on.
-fn skip<'a>(text: &str, kept: &'a [bool], pan: usize) -> (String, &'a [bool]) {
     (
-        text.chars().skip(pan).collect(),
-        kept.get(pan..).unwrap_or(&[]),
+        text.chars().skip(chars).collect(),
+        kept.get(chars..).unwrap_or(&[]),
     )
 }
 
