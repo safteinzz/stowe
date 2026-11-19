@@ -202,7 +202,7 @@ fn handle(app: &mut App, key: KeyEvent, terminal: &mut DefaultTerminal) -> bool 
     }
 }
 
-/// A form's Enter on its last field. A refusal leaves it up, under the alert.
+/// A form's Enter. A refusal leaves it up, under the alert.
 fn submit(app: &mut App) {
     let Some((form, kind)) = app.form.take() else {
         return;

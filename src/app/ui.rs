@@ -511,7 +511,7 @@ const IN_A_FORM: HelpSection = (
         ("tab shift-tab", "the next, previous field"),
         (CTRL_Y_MOVE, "the next, previous field"),
         ("←→ space", "change a pick"),
-        ("↵", "the next field, or submit on the last"),
+        ("↵", "submit, from any field"),
         ("esc", "cancel"),
     ],
 );

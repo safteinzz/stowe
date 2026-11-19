@@ -37,9 +37,11 @@ pub const QUIT: &str = "q quit";
 pub const HELP: &str = "? help";
 pub const KEEP: &str = "↵ keep";
 pub const SELECT: &str = "↵ select";
+pub const SUBMIT: &str = "↵ submit";
 pub const BACK: &str = "esc back";
 pub const CANCEL: &str = "esc cancel";
 pub const CLOSE: &str = "esc close";
+pub const REQUIRED: &str = "* required";
 pub const SEP: &str = " · ";
 
 /// The key rows of the box kinds, each written by that kind's drawing function.
@@ -989,8 +991,8 @@ pub enum FormKey {
 }
 
 /// A cyan box of typed fields: labels in one column, values in the next. Enter
-/// moves to the next field and submits on the last, `tab`/`ctrl-j` and
-/// `shift-tab`/`ctrl-k` move between fields, and every field edits like a shell
+/// submits from any field, `tab`/`ctrl-j` and `shift-tab`/`ctrl-k` move
+/// between fields, and every field edits like a shell
 /// line through `Query::on_key`.
 pub struct Form {
     pub title: String,
@@ -1024,16 +1026,14 @@ impl Form {
         match code {
             KeyCode::Esc => return FormKey::Cancel,
             KeyCode::Enter => {
-                // A blank the submit would refuse is where the cursor goes,
-                // rather than past it.
+                // A blank starred field refuses the submit and takes the cursor.
                 let blank = self
                     .fields
                     .iter()
                     .position(|f| f.required && f.value.text.trim().is_empty());
                 match blank {
-                    Some(i) if i <= self.at || self.at == last => self.at = i,
-                    _ if self.at < last => self.at += 1,
-                    _ => return FormKey::Submit,
+                    Some(i) => self.at = i,
+                    None => return FormKey::Submit,
                 }
             }
             KeyCode::Tab => self.at = if self.at == last { 0 } else { self.at + 1 },
@@ -1112,14 +1112,9 @@ impl Form {
             lines.push(Line::from(spans));
         }
         lines.push(Line::from(""));
-        let enter = if self.at + 1 == self.fields.len() {
-            "↵ submit"
-        } else {
-            "↵ next"
-        };
-        let mut keys = vec![enter, CANCEL];
+        let mut keys = vec![SUBMIT, CANCEL];
         if self.fields.iter().any(|f| f.required) {
-            keys.push("* required");
+            keys.push(REQUIRED);
         }
         lines.push(box_hint(&keys));
         draw_box(frame, area, width, lines, Color::Cyan, &self.title);
